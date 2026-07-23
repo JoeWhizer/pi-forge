@@ -30,7 +30,7 @@ services:
       # API_KEY in .env before deploying; see SECURITY.md.
       - "${HOST_PORT:-3000}:3000"
     volumes:
-      - ${WORKSPACE_HOST_PATH:-../workspace}:/workspace
+      - ${WORKSPACE_HOST_PATH:-~/.pi-forge-docker/workspace}:/workspace
       - ${PI_CONFIG_HOST_PATH:-~/.pi/agent}:/home/pi/.pi/agent
       # Default differs from the host pi-forge dir so the container has
       # its own project list — see containers.md.

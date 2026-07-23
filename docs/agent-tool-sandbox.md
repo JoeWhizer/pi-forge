@@ -160,7 +160,7 @@ bind mounts from `docker/docker-compose.yml`:
 
 ```yaml
 volumes:
-  - ${WORKSPACE_HOST_PATH:-../workspace}:/workspace
+  - ${WORKSPACE_HOST_PATH:-~/.pi-forge-docker/workspace}:/workspace
   - ${PI_CONFIG_HOST_PATH:-~/.pi/agent}:/home/pi/.pi/agent
   - ${FORGE_DATA_HOST_PATH:-~/.pi-forge-docker}:/home/pi/.pi-forge
 ```
@@ -174,9 +174,9 @@ container:
 # Workspace: writable by pi-tools and accessible to the root server.
 # Group 0 matters because sandbox containers drop DAC_OVERRIDE, so root
 # cannot bypass mode bits on host bind mounts.
-sudo mkdir -p ./workspace
-sudo chown -R 1001:0 ./workspace
-sudo chmod -R u+rwX,g+rwX,o-rwx ./workspace
+sudo mkdir -p ~/.pi-forge-docker/workspace
+sudo chown -R 1001:0 ~/.pi-forge-docker/workspace
+sudo chmod -R u+rwX,g+rwX,o-rwx ~/.pi-forge-docker/workspace
 
 # Forge data: server-only.
 sudo mkdir -p ~/.pi-forge-docker
@@ -279,7 +279,7 @@ volumes:
 services:
   pi-forge:
     volumes:
-      - ${WORKSPACE_HOST_PATH:-../workspace}:/workspace
+      - ${WORKSPACE_HOST_PATH:-~/.pi-forge-docker/workspace}:/workspace
       - pi-config:/home/pi/.pi/agent
       - forge-data:/home/pi/.pi-forge
 

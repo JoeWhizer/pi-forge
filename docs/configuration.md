@@ -362,7 +362,7 @@ The shipped `docker-compose.yml` mounts these paths by default:
 |---|---|---|
 | `/home/pi/.pi/agent` | `${PI_CONFIG_HOST_PATH:-~/.pi/agent}` | Shared with host pi CLI by default — same provider keys, custom providers, agent defaults |
 | `/home/pi/.pi-forge` | `${FORGE_DATA_HOST_PATH:-~/.pi-forge-docker}` | **Separate** from the host's `~/.pi-forge` so the container has its own project list — host project paths wouldn't resolve inside the container anyway |
-| `/workspace` | `${WORKSPACE_HOST_PATH:-../workspace}` | User code; sessions under `.pi/sessions/` here |
+| `/workspace` | `${WORKSPACE_HOST_PATH:-~/.pi-forge-docker/workspace}` | User code; sessions under `.pi/sessions/` here. Kept outside the repository so checkout moves do not affect it |
 
 `docker/.env.example` intentionally keeps to common values (host port,
 UID/GID, bind mounts, auth, logging/proxy hints). Less-used values such

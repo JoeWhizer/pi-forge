@@ -11,6 +11,6 @@ services:
   pi-forge:
     userns_mode: keep-id
     volumes:
-      - ${WORKSPACE_HOST_PATH:-../workspace}:/workspace:Z
+      - ${WORKSPACE_HOST_PATH:-~/.pi-forge-docker/workspace}:/workspace:Z
       - ${PI_CONFIG_HOST_PATH:-~/.pi/agent}:/home/pi/.pi/agent:Z
       - ${FORGE_DATA_HOST_PATH:-~/.pi-forge-docker}:/home/pi/.pi-forge:Z

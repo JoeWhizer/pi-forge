@@ -86,7 +86,7 @@ Three bind-mounted volumes:
 
 | Container path | Compose env var (default) | Contents |
 |---|---|---|
-| `/workspace` | `WORKSPACE_HOST_PATH` (`../workspace`) | User's project source. Projects are subfolders |
+| `/workspace` | `WORKSPACE_HOST_PATH` (`~/.pi-forge-docker/workspace`) | User's project source. Projects are subfolders; kept outside the repository so checkout moves do not affect it |
 | `/home/pi/.pi/agent` | `PI_CONFIG_HOST_PATH` (`~/.pi/agent`) | Pi SDK config — provider keys, models, settings. Shared with host pi CLI by default so secrets aren't copied into the image |
 | `/home/pi/.pi-forge` | `FORGE_DATA_HOST_PATH` (`~/.pi-forge-docker`) | Forge state — `projects.json`, MCP / overrides / `jwt-secret` / `password-hash`. **Separate default** from the host path so the container has its own project list (host paths wouldn't resolve inside the container anyway) |
 
