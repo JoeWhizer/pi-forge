@@ -69,6 +69,7 @@ or shell environment. The most-touched ones:
 | `LDAP_TIMEOUT_MS` | `5000` | LDAP connect/operation timeout in milliseconds. |
 | `LDAP_TLS_REJECT_UNAUTHORIZED` | `true` | Reject untrusted TLS certificates for `ldaps://` connections. Set `false` only for local/self-signed testing. |
 | `MINIMAL_UI` | `false` | Hide terminal / git / last-turn / providers / agent-settings panels. Frontend gate; server routes unchanged. ALSO hard-disables webhook configuration, session orchestration, and the quick-actions runner. |
+| `BRANCH` | `test` | Public deployment badge beside the sidebar version. Allowed values: `test`, `staging`, `prod`; any other value prevents server startup. Set this explicitly for every deployed instance. |
 | `AUTH_BANNER_TEXT` | (unset) | Optional public banner shown below the login prompt. Literal newlines/carriage returns are preserved; `\\n` and `\\r` escapes are decoded for single-line env/CLI surfaces. Do not put secrets here: it is exposed by public `/api/v1/ui-config`. |
 | `AUTH_BANNER_HTML` | `false` | When true, renders `AUTH_BANNER_TEXT` as sanitized HTML instead of plain text. Scripts, styles, event handlers, and unsafe links are stripped client-side. Leave false unless you need links or simple formatting. |
 | `LOGO_URL_MODE` | `cache` | Logo URL handling mode. `cache` fetches configured logo URLs at server startup into `FORGE_DATA_DIR/cache/logos/` and returns same-origin `/cache/logos/...` URLs. `direct` returns configured raw URLs so the browser loads them directly. Accepted values: `cache`, `direct`. |

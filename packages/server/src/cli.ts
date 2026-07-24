@@ -300,6 +300,14 @@ const FLAGS: readonly FlagDef[] = [
     defaultText: "info",
   },
   {
+    name: "branch",
+    env: "BRANCH",
+    type: "string",
+    group: "features",
+    desc: "Deployment badge: test, staging, or prod",
+    defaultText: "test",
+  },
+  {
     name: "serve-client",
     env: "SERVE_CLIENT",
     type: "boolean",

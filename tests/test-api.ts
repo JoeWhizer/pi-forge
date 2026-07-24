@@ -114,6 +114,7 @@ async function main(): Promise<void> {
       PORT: String(port),
       LOG_LEVEL: "warn",
       NODE_ENV: "test",
+      BRANCH: "staging",
       WORKSPACE_PATH: workspacePath,
       PI_CONFIG_DIR: configDir,
       FORGE_DATA_DIR: dataDir,
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
       const uiBody = uiConfig.body as {
         version?: string;
         buildCommit?: string;
+        deploymentBranch?: string;
         authBannerText?: string;
         authBannerHtml?: boolean;
         ldapEnabled?: boolean;
@@ -181,6 +183,7 @@ async function main(): Promise<void> {
       };
       assert("ui-config reports a package version", typeof uiBody.version === "string");
       assert("ui-config reports a build commit", typeof uiBody.buildCommit === "string");
+      assert("ui-config reports deployment branch", uiBody.deploymentBranch === "staging");
       assert(
         "ui-config decodes banner newlines",
         uiBody.authBannerText === "Welcome\nRead <b>the policy</b>",

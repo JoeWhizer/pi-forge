@@ -78,6 +78,14 @@ function readBool(key: string, fallback: boolean): boolean {
   throw new Error(`config: ${key} must be a boolean-ish value (got ${v})`);
 }
 
+export type DeploymentBranch = "test" | "staging" | "prod";
+
+function readDeploymentBranch(): DeploymentBranch {
+  const value = readEnv("BRANCH") ?? "test";
+  if (value === "test" || value === "staging" || value === "prod") return value;
+  throw new Error(`config: BRANCH must be test, staging, or prod (got ${value})`);
+}
+
 function readUiText(key: string): string | undefined {
   const v = readEnv(key);
   if (v === undefined) return undefined;
@@ -357,6 +365,8 @@ export const config = Object.freeze({
   // documented `docker compose up` flow keeps working out of the box.
   host: readEnv("HOST") ?? "127.0.0.1",
   logLevel: readEnv("LOG_LEVEL") ?? "info",
+  /** Public, operator-defined deployment label. Invalid values stop startup. */
+  deploymentBranch: readDeploymentBranch(),
   isTest: (readEnv("NODE_ENV") ?? "") === "test",
   isProduction: (readEnv("NODE_ENV") ?? "") === "production",
   trustProxy: readBool("TRUST_PROXY", false),

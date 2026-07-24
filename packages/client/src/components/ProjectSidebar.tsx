@@ -28,6 +28,12 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
   const disposeSession = useSessionStore((s) => s.disposeSession);
   const version = useUiConfigStore((s) => s.version);
   const buildCommit = useUiConfigStore((s) => s.buildCommit);
+  const deploymentBranch = useUiConfigStore((s) => s.deploymentBranch);
+  const deploymentBadgeClass = {
+    test: "border-emerald-900/70 bg-emerald-950/40 text-emerald-300",
+    staging: "border-amber-900/70 bg-amber-950/40 text-amber-300",
+    prod: "border-rose-900/70 bg-rose-950/40 text-rose-300",
+  }[deploymentBranch];
 
   /**
    * Create a new session under `projectId`. Mirrors the project-
@@ -284,10 +290,15 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
       {version.length > 0 && (
         <footer className="border-t border-neutral-800 px-2 py-2">
           <div
-            className="rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 font-mono text-[10px] text-neutral-500"
-            title={`Pi Forge build ${version}-${buildCommit || "unknown"}`}
+            className="flex items-center justify-between gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 font-mono text-[10px] text-neutral-500"
+            title={`Pi Forge build ${version}-${buildCommit || "unknown"} (${deploymentBranch})`}
           >
-            version {version}-{buildCommit || "unknown"}
+            <span>
+              version {version}-{buildCommit || "unknown"}
+            </span>
+            <span className={`rounded border px-1.5 py-px ${deploymentBadgeClass}`}>
+              [{deploymentBranch}]
+            </span>
           </div>
         </footer>
       )}
