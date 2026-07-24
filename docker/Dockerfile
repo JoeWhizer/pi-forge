@@ -292,6 +292,11 @@ ENV NODE_ENV=production \
     SHELL=/bin/bash \
     TERM=xterm-256color
 
+# Keep the variable at the end of the stage: changing a commit must not
+# invalidate the expensive runtime dependency layers above.
+ARG BUILD_COMMIT=unknown
+ENV PI_FORGE_BUILD_COMMIT=${BUILD_COMMIT}
+
 EXPOSE 3000
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/pi-forge-entrypoint"]

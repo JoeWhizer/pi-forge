@@ -169,8 +169,13 @@ listed as runtime defaults. Quickstart:
 cp docker/.env.example docker/.env
 # edit docker/.env — at minimum set HOST_PORT and (for any non-loopback
 # deploy) UI_PASSWORD (JWT_SECRET auto-generates), or API_KEY
-cd docker && docker compose up -d --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
+
+`BUILD_COMMIT` embeds the checked-out short Git revision into the image and
+shows it beside the package version in the Projects sidebar. Use the same
+variable for every rebuild; without it, published or container-only builds
+show `unknown` because the runtime image intentionally excludes `.git`.
 
 ### Rootless Podman on SELinux-enabled Linux
 
@@ -180,7 +185,7 @@ private SELinux labels:
 
 ```bash
 cd docker
-PUID=$(id -u) PGID=$(id -g) \
+BUILD_COMMIT=$(git rev-parse --short HEAD) PUID=$(id -u) PGID=$(id -g) \
   podman-compose -f docker-compose.yml -f docker-compose.podman.yml up -d --build
 ```
 
@@ -294,7 +299,7 @@ The image is **not** auto-updating. To pull a new release:
 
 ```bash
 git pull origin main
-cd docker && docker compose up -d --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) docker compose -f docker/docker-compose.yml up -d --build
 ```
 
 The build is incremental — npm dep resolution caches; only changed source

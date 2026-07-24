@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Plus, X, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
+import { useUiConfigStore } from "../store/ui-config-store";
 import { ProjectPicker } from "./ProjectPicker";
 import { SessionList } from "./SessionList";
 import { Modal } from "./Modal";
@@ -25,6 +26,8 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
   const sessionsByProject = useSessionStore((s) => s.byProject);
   const createSession = useSessionStore((s) => s.createSession);
   const disposeSession = useSessionStore((s) => s.disposeSession);
+  const version = useUiConfigStore((s) => s.version);
+  const buildCommit = useUiConfigStore((s) => s.buildCommit);
 
   /**
    * Create a new session under `projectId`. Mirrors the project-
@@ -277,6 +280,17 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
           );
         })}
       </div>
+
+      {version.length > 0 && (
+        <footer className="border-t border-neutral-800 px-2 py-2">
+          <div
+            className="rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 font-mono text-[10px] text-neutral-500"
+            title={`Pi Forge build ${version}-${buildCommit || "unknown"}`}
+          >
+            version {version}-{buildCommit || "unknown"}
+          </div>
+        </footer>
+      )}
 
       {showPicker && <ProjectPicker onClose={() => setShowPicker(false)} />}
       <Modal

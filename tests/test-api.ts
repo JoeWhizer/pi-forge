@@ -161,6 +161,8 @@ async function main(): Promise<void> {
       const uiConfig = await jget(`${base}/api/v1/ui-config`);
       assert("/api/v1/ui-config → 200 with no auth", uiConfig.status === 200);
       const uiBody = uiConfig.body as {
+        version?: string;
+        buildCommit?: string;
         authBannerText?: string;
         authBannerHtml?: boolean;
         ldapEnabled?: boolean;
@@ -177,6 +179,8 @@ async function main(): Promise<void> {
           buttonHoverBackground: string;
         };
       };
+      assert("ui-config reports a package version", typeof uiBody.version === "string");
+      assert("ui-config reports a build commit", typeof uiBody.buildCommit === "string");
       assert(
         "ui-config decodes banner newlines",
         uiBody.authBannerText === "Welcome\nRead <b>the policy</b>",

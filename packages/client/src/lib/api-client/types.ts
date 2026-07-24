@@ -309,6 +309,8 @@ export interface UiConfigResponse {
   workspaceRoot: string;
   /** Server build version (mirrors packages/server's package.json). */
   version: string;
+  /** Short Git commit embedded at image build time, or "unknown" when unavailable. */
+  buildCommit: string;
   /**
    * True when the server supports the browser password-change flow
    * (env UI_PASSWORD set OR a persisted password-hash exists).
