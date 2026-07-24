@@ -49,6 +49,8 @@ interface UiConfigState {
   orchestrationEnabled: boolean;
   /** Global server-side color overrides for broad UI surfaces. */
   serverTheme: ServerThemeConfigResponse | undefined;
+  /** Public assistant label rendered above chat responses. */
+  assistantName: string;
   /** Optional public banner shown below the login prompt. */
   authBannerText: string | undefined;
   /** True when the banner should render as sanitized HTML. */
@@ -80,6 +82,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
   ldapEnabled: false,
   orchestrationEnabled: false,
   serverTheme: undefined,
+  assistantName: "Assistant",
   authBannerText: undefined,
   authBannerHtml: false,
   logoUrlMode: "cache",
@@ -107,6 +110,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
         ldapEnabled: cfg.ldapEnabled,
         orchestrationEnabled: cfg.orchestrationEnabled,
         serverTheme: cfg.serverTheme,
+        assistantName: cfg.assistantName,
         authBannerText: cfg.authBannerText,
         authBannerHtml: cfg.authBannerHtml,
         logoUrlMode: cfg.logoUrlMode,

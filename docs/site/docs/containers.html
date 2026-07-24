@@ -169,8 +169,8 @@ mounts if the host file-sharing layer makes ownership inconsistent.</p>
 </thead>
 <tbody><tr>
 <td><code>/workspace</code></td>
-<td><code>WORKSPACE_HOST_PATH</code> (<code>../workspace</code>)</td>
-<td>User&#39;s project source. Projects are subfolders</td>
+<td><code>WORKSPACE_HOST_PATH</code> (<code>~/.pi-forge-docker/workspace</code>)</td>
+<td>User&#39;s project source. Projects are subfolders; kept outside the repository so checkout moves do not affect it</td>
 </tr>
 <tr>
 <td><code>/home/pi/.pi/agent</code></td>
@@ -284,14 +284,18 @@ listed as runtime defaults. Quickstart:</p>
 <pre><code class="language-bash">cp docker/.env.example docker/.env
 # edit docker/.env — at minimum set HOST_PORT and (for any non-loopback
 # deploy) UI_PASSWORD (JWT_SECRET auto-generates), or API_KEY
-cd docker &amp;&amp; docker compose up -d --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 </code></pre>
+<p><code>BUILD_COMMIT</code> embeds the checked-out short Git revision into the image and
+shows it beside the package version in the Projects sidebar. Use the same
+variable for every rebuild; without it, published or container-only builds
+show <code>unknown</code> because the runtime image intentionally excludes <code>.git</code>.</p>
 <h3>Rootless Podman on SELinux-enabled Linux</h3>
 <p>Keep SELinux enforcing. Use the Podman overlay to map the container&#39;s <code>pi</code>
 user to the invoking host user and to give the three bind-mount sources
 private SELinux labels:</p>
 <pre><code class="language-bash">cd docker
-PUID=$(id -u) PGID=$(id -g) \
+BUILD_COMMIT=$(git rev-parse --short HEAD) PUID=$(id -u) PGID=$(id -g) \
   podman-compose -f docker-compose.yml -f docker-compose.podman.yml up -d --build
 </code></pre>
 <p><code>userns_mode: keep-id</code> is Podman-specific, so it is intentionally kept out of
@@ -386,7 +390,7 @@ read-only.</li>
 <h2>Updating</h2>
 <p>The image is <strong>not</strong> auto-updating. To pull a new release:</p>
 <pre><code class="language-bash">git pull origin main
-cd docker &amp;&amp; docker compose up -d --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) docker compose -f docker/docker-compose.yml up -d --build
 </code></pre>
 <p>The build is incremental — npm dep resolution caches; only changed source
 files trigger a rebuild. Cold builds are ~3-5 minutes; warm rebuilds are

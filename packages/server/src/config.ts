@@ -94,6 +94,22 @@ function readUiText(key: string): string | undefined {
   return v.replace(/\\r/g, "\r").replace(/\\n/g, "\n");
 }
 
+function readAssistantName(): string {
+  const value = readEnv("ASSISTANT_NAME") ?? "Assistant";
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 64 ||
+    /[\r\n]/.test(trimmed) ||
+    trimmed.includes("\0")
+  ) {
+    throw new Error(
+      "config: ASSISTANT_NAME must be 1-64 characters without line breaks or NUL bytes",
+    );
+  }
+  return trimmed;
+}
+
 function readHttpUrl(key: string): string | undefined {
   const v = readEnv(key);
   if (v === undefined) return undefined;
@@ -394,6 +410,8 @@ export const config = Object.freeze({
    */
   authBannerText: readUiText("AUTH_BANNER_TEXT"),
   authBannerHtml: readBool("AUTH_BANNER_HTML", false),
+  /** Public assistant label rendered above chat responses. */
+  assistantName: readAssistantName(),
   logoUrlMode: readLogoUrlMode("LOGO_URL_MODE"),
   logoImgSrcAllowlist: readLogoImgSrcAllowlist("LOGO_IMG_SRC_ALLOWLIST"),
   authLogoUrl: readHttpUrl("AUTH_URL_LOGO") ?? readHttpUrl("AUTH_LOGO_URL"),

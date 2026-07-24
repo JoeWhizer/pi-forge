@@ -47,9 +47,11 @@ services:
       # Auth — read from .env. Both empty = auth disabled.
       UI_PASSWORD: ${UI_PASSWORD:-}
       API_KEY: ${API_KEY:-}
-      # Deployment identity, logging + reverse-proxy hint.
+      # Deployment identity and public label shown above assistant responses.
       # BRANCH must be test, staging, or prod; the server rejects other values.
       BRANCH: ${BRANCH:-test}
+      ASSISTANT_NAME: ${ASSISTANT_NAME:-Assistant}
+      # Logging + reverse-proxy hint.
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       # Less-used server env vars (JWT_SECRET, CORS_ORIGIN, MINIMAL_UI,

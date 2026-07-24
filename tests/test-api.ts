@@ -120,6 +120,7 @@ async function main(): Promise<void> {
       FORGE_DATA_DIR: dataDir,
       SESSION_DIR: join(workspacePath, ".pi", "sessions"),
       API_KEY: apiKey,
+      ASSISTANT_NAME: "Jarvis",
       AUTH_BANNER_TEXT: "Welcome\\nRead <b>the policy</b>",
       AUTH_BANNER_HTML: "true",
       AUTH_LOGO_URL: "https://example.com/pi-forge-logo.png",
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
         version?: string;
         buildCommit?: string;
         deploymentBranch?: string;
+        assistantName?: string;
         authBannerText?: string;
         authBannerHtml?: boolean;
         ldapEnabled?: boolean;
@@ -184,6 +186,7 @@ async function main(): Promise<void> {
       assert("ui-config reports a package version", typeof uiBody.version === "string");
       assert("ui-config reports a build commit", typeof uiBody.buildCommit === "string");
       assert("ui-config reports deployment branch", uiBody.deploymentBranch === "staging");
+      assert("ui-config reports assistant name", uiBody.assistantName === "Jarvis");
       assert(
         "ui-config decodes banner newlines",
         uiBody.authBannerText === "Welcome\nRead <b>the policy</b>",
