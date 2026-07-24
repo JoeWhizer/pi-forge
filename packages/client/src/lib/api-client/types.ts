@@ -330,6 +330,8 @@ export interface UiConfigResponse {
   orchestrationEnabled: boolean;
   /** Global server-side color overrides for broad UI surfaces. */
   serverTheme: ServerThemeConfigResponse | undefined;
+  /** Public assistant label rendered above chat responses. */
+  assistantName: string;
   /** Optional public banner shown on the login screen. */
   authBannerText: string | undefined;
   /** True when the banner should render as sanitized HTML. */

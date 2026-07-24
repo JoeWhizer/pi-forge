@@ -210,6 +210,10 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
   // builds kept orchestration behind an explicit opt-in flag.
   const orchestrationEnabled =
     typeof value.orchestrationEnabled === "boolean" ? value.orchestrationEnabled : false;
+  const assistantName =
+    typeof value.assistantName === "string" && value.assistantName.trim().length > 0
+      ? value.assistantName
+      : "Assistant";
   const authBannerText =
     typeof value.authBannerText === "string" ? value.authBannerText : undefined;
   const authBannerHtml = typeof value.authBannerHtml === "boolean" ? value.authBannerHtml : false;
@@ -229,6 +233,7 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
     orchestrationEnabled,
     serverTheme:
       value.serverTheme === undefined ? undefined : vServerThemeConfig(value.serverTheme, status),
+    assistantName,
     authBannerText,
     authBannerHtml,
     logoUrlMode,

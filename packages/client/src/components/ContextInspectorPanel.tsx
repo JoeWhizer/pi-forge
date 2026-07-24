@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Code2, Loader2, RefreshCw, Search, X } from 
 import { Highlight, themes as prismThemes } from "prism-react-renderer";
 import { api, ApiError, type ContextTurn, type SessionContextResponse } from "../lib/api-client";
 import { useSessionStore } from "../store/session-store";
+import { useUiConfigStore } from "../store/ui-config-store";
 
 /**
  * Chars-per-token estimate used by every local approximation in this
@@ -696,6 +697,7 @@ function MessageList({
   // query means "no filter" (the common case). Indexes are
   // preserved in the filtered view so onViewRaw still passes the
   // ORIGINAL message index to the raw-JSON modal.
+  const assistantName = useUiConfigStore((s) => s.assistantName);
   const q = search.trim().toLowerCase();
   const filtered = useMemo(() => {
     if (q.length === 0) return messages.map((m, i) => ({ msg: m, originalIndex: i }));
@@ -769,7 +771,7 @@ function MessageList({
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <div className="flex items-center gap-1.5">
                   <span className="rounded bg-violet-900/40 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-violet-300 light:bg-violet-100 light:text-violet-800">
-                    assistant (streaming)
+                    {assistantName} (streaming)
                   </span>
                 </div>
                 <p className="line-clamp-2 text-[11px] text-neutral-300">{streamingTail.content}</p>

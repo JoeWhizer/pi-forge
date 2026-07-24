@@ -151,6 +151,7 @@ export function ChatView({ sessionId }: Props) {
   const [treeOpen, setTreeOpen] = useState(false);
   const [orchOpen, setOrchOpen] = useState(false);
   const orchestrationEnabled = useUiConfigStore((s) => s.orchestrationEnabled);
+  const assistantName = useUiConfigStore((s) => s.assistantName);
 
   // Conversation export menu (Markdown / Raw JSONL). Hidden on mobile —
   // the file-download flow is desktop-shaped (browser save dialog,
@@ -642,7 +643,7 @@ export function ChatView({ sessionId }: Props) {
                 data-message-role="assistant"
               >
                 <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
-                  assistant (streaming)
+                  {assistantName} (streaming)
                 </div>
                 <div className="text-neutral-100">
                   <ChatMarkdown text={streamingText} />
@@ -1416,6 +1417,7 @@ function AssistantMessageBubble({
   // text block — toolCall and thinking blocks aren't markdown and
   // the toggle would do nothing useful for them.
   const hasTextBlock = content.some((b) => b.type === "text");
+  const assistantName = useUiConfigStore((s) => s.assistantName);
   // Provider-side failures (openai-completions catch path, openrouter
   // 4xx, etc.) finalise the assistant message with `stopReason="error"`
   // and an `errorMessage`. The session-level banner gets cleared by the
@@ -1438,7 +1440,9 @@ function AssistantMessageBubble({
     >
       <div className="mb-1 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-neutral-500">assistant</span>
+          <span className="text-[10px] uppercase tracking-wider text-neutral-500">
+            {assistantName}
+          </span>
           <MessageTimestamp ts={(message as { timestamp?: unknown }).timestamp} />
         </div>
         {hasTextBlock && (

@@ -127,6 +127,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               "ldapEnabled",
               "orchestrationEnabled",
               "serverTheme",
+              "assistantName",
               "authBannerHtml",
             ],
             properties: {
@@ -163,6 +164,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               // Public login-screen customization. Banner text and
               // logo URL are optional; HTML rendering is explicit and
               // client-sanitized.
+              assistantName: { type: "string", minLength: 1, maxLength: 64 },
               authBannerText: { type: "string" },
               authBannerHtml: { type: "boolean" },
               logoUrlMode: { type: "string", enum: ["cache", "direct"] },
@@ -208,6 +210,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
         ldapEnabled: config.auth.ldap.enabled,
         orchestrationEnabled: isOrchestrationEnabled(),
         serverTheme: { ...serverTheme, defaults: DEFAULT_THEME_COLORS },
+        assistantName: config.assistantName,
         authBannerText: config.authBannerText,
         authBannerHtml: config.authBannerHtml,
         logoUrlMode: config.logoUrlMode,

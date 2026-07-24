@@ -119,6 +119,7 @@ async function main(): Promise<void> {
       FORGE_DATA_DIR: dataDir,
       SESSION_DIR: join(workspacePath, ".pi", "sessions"),
       API_KEY: apiKey,
+      ASSISTANT_NAME: "Jarvis",
       AUTH_BANNER_TEXT: "Welcome\\nRead <b>the policy</b>",
       AUTH_BANNER_HTML: "true",
       AUTH_LOGO_URL: "https://example.com/pi-forge-logo.png",
@@ -161,6 +162,7 @@ async function main(): Promise<void> {
       const uiConfig = await jget(`${base}/api/v1/ui-config`);
       assert("/api/v1/ui-config → 200 with no auth", uiConfig.status === 200);
       const uiBody = uiConfig.body as {
+        assistantName?: string;
         authBannerText?: string;
         authBannerHtml?: boolean;
         ldapEnabled?: boolean;
@@ -177,6 +179,7 @@ async function main(): Promise<void> {
           buttonHoverBackground: string;
         };
       };
+      assert("ui-config reports assistant name", uiBody.assistantName === "Jarvis");
       assert(
         "ui-config decodes banner newlines",
         uiBody.authBannerText === "Welcome\nRead <b>the policy</b>",

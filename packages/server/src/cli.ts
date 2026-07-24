@@ -316,6 +316,14 @@ const FLAGS: readonly FlagDef[] = [
     defaultText: "false",
   },
   {
+    name: "assistant-name",
+    env: "ASSISTANT_NAME",
+    type: "string",
+    group: "features",
+    desc: "Name shown above assistant chat responses",
+    defaultText: "Assistant",
+  },
+  {
     name: "auth-banner-text",
     env: "AUTH_BANNER_TEXT",
     type: "string",

@@ -44,6 +44,8 @@ services:
       # Auth — read from .env. Both empty = auth disabled.
       UI_PASSWORD: ${UI_PASSWORD:-}
       API_KEY: ${API_KEY:-}
+      # Public label shown above assistant responses.
+      ASSISTANT_NAME: ${ASSISTANT_NAME:-Assistant}
       # Logging + reverse-proxy hint.
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TRUST_PROXY: ${TRUST_PROXY:-false}
