@@ -123,7 +123,7 @@ export const MAX_READ_BYTES = 5 * 1024 * 1024;
  * editor has no use for the object database, and walking it dwarfs every
  * other dir.
  */
-const TREE_SKIP_DIRS = new Set([
+const SEARCH_SKIP_DIRS = new Set([
   "node_modules",
   ".git",
   "dist",
@@ -137,13 +137,16 @@ const TREE_SKIP_DIRS = new Set([
   ".cache",
 ]);
 
+// Subagent artifacts are a Files-tree-only exclusion: the eye toggle can
+// reveal them, while search, @ autocomplete, and downloads retain their
+// established behavior.
+const TREE_SKIP_DIRS = new Set([...SEARCH_SKIP_DIRS, ".pi-subagents"]);
+
 /**
- * Re-export the directory exclusion list so file-searcher.ts can
- * apply the same filter when ripgrep is unavailable. Keeping a
- * single source of truth here avoids drift between the file-tree
- * view and the in-process search results.
+ * Re-export the search exclusion list so file-searcher.ts can apply the same
+ * filter when ripgrep is unavailable.
  */
-export const SEARCH_SKIP_DIRS: ReadonlySet<string> = TREE_SKIP_DIRS;
+export { SEARCH_SKIP_DIRS };
 
 const DEFAULT_TREE_DEPTH = 32;
 
@@ -417,8 +420,8 @@ export interface ReadResult {
 
 /**
  * Flat list of every file under `root` (recursive) used by the
- * chat-input `@` autocomplete. Skips the same directories `getTree`
- * does. Returns POSIX-style paths RELATIVE to `root` so a single
+ * chat-input `@` autocomplete. Skips the standard search exclusions, but not
+ * Files-tree-only exclusions. Returns POSIX-style paths RELATIVE to `root` so a single
  * project's listing transports / sorts predictably; the caller joins
  * back to `root` when actually reading a file.
  *
@@ -441,16 +444,16 @@ export async function listAllFiles(rootPath: string): Promise<string[]> {
  * Recursive walk that emits BOTH files and directories. Directories
  * are emitted with a trailing `/` so the chat input's `@` autocomplete
  * (and any other consumer) can tell them apart at a glance — same
- * convention as `ls -F`. Files have no trailing slash. The
- * skip-list (`node_modules`, `.git`, etc.) still applies — those
- * dirs aren't emitted nor descended into.
+ * convention as `ls -F`. Files have no trailing slash. Standard search
+ * exclusions (`node_modules`, `.git`, etc.) still apply — those dirs aren't
+ * emitted nor descended into.
  */
 async function walkFlat(dir: string, root: string, relPath: string, out: string[]): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     const name = entry.name;
     if (entry.isDirectory()) {
-      if (TREE_SKIP_DIRS.has(name)) continue;
+      if (SEARCH_SKIP_DIRS.has(name)) continue;
       const dirRel = relPath === "" ? name : `${relPath}/${name}`;
       // Emit the directory itself (with trailing `/`) so chat
       // `@`-autocomplete can offer folder references that the LLM
@@ -581,8 +584,8 @@ export async function writeFile(absPath: string, root: string, content: string):
  * directory: a streamed gzip-tar of the directory contents (filename
  * is `<dir>.tar.gz`, no Content-Length because we're streaming).
  *
- * Skips the same noise dirs as the file tree (node_modules, .git,
- * dist, build, etc.) so a "download project" doesn't ship hundreds
+ * Skips the standard noise dirs (node_modules, .git, dist, build, etc.) so a
+ * "download project" doesn't ship hundreds
  * of MB of generated artefacts.
  */
 export async function downloadStream(
@@ -624,7 +627,7 @@ export async function downloadStream(
         follow: false,
         filter: (path: string) => {
           for (const part of path.split(/[/\\]/)) {
-            if (TREE_SKIP_DIRS.has(part)) return false;
+            if (SEARCH_SKIP_DIRS.has(part)) return false;
           }
           return true;
         },

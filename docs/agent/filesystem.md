@@ -10,8 +10,9 @@ Read this when changing file browser behavior, file-manager operations, path val
    with the project root using `startsWith()` AFTER resolving. This prevents
    `../../../etc/passwd` style traversal.
 3. Max file read size: 5MB. Larger files return a truncation notice.
-4. By default, `getTree()` skips: `node_modules`, `.git`, `dist`, `build`,
-   `__pycache__`, `.next`, `.nuxt`, `coverage`, `.vite`, `.turbo`, `.cache`.
+4. By default, `getTree()` skips: `node_modules`, `.git`, `.pi-subagents`,
+   `dist`, `build`, `__pycache__`, `.next`, `.nuxt`, `coverage`, `.vite`,
+   `.turbo`, `.cache`.
    `/files/tree?includeExcluded=true` disables that filtering for the Files-tree
    toggle only. Recursion is capped at max depth 32; `/files/tree?maxDepth=` is
    clamped to 1–32.

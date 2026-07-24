@@ -23,9 +23,10 @@ publish/
 *.log
 npm-debug.log*
 
-# Pi session data
+# Pi session data and subagent artifacts
 *.jsonl
 .pi/sessions/
+.pi-subagents/
 
 # Linter / build caches
 .eslintcache

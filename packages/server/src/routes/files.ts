@@ -310,7 +310,7 @@ export const fileRoutes: FastifyPluginAsync = async (fastify) => {
       schema: {
         description:
           "Recursive directory tree for the project. By default skips noisy folders " +
-          "(node_modules, .git, dist, build, __pycache__, .next, .nuxt, " +
+          "(node_modules, .git, .pi-subagents, dist, build, __pycache__, .next, .nuxt, " +
           "coverage, .vite, .turbo, .cache); includeExcluded=true shows all folders. " +
           "Recursion is capped at " +
           "max depth 32 to avoid unbounded filesystem walks.",
