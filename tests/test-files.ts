@@ -151,6 +151,7 @@ async function main(): Promise<void> {
   await mkdir(cappedDir, { recursive: true });
   await mkdir(join(projectPath, "node_modules", "fake-pkg"), { recursive: true });
   await mkdir(join(projectPath, ".git", "objects"), { recursive: true });
+  await mkdir(join(projectPath, ".pi-subagents", "artifacts"), { recursive: true });
   await mkdir(join(projectPath, "dist"), { recursive: true });
   await mkdir(join(projectPath, "build"), { recursive: true });
   await fsWrite(join(projectPath, "src", "index.ts"), "export const x = 1;\n", "utf8");
@@ -160,6 +161,7 @@ async function main(): Promise<void> {
   await symlink(join("src", "index.ts"), join(projectPath, "linked-index.ts"));
   await fsWrite(join(projectPath, "node_modules", "fake-pkg", "index.js"), "module.exports={};\n");
   await fsWrite(join(projectPath, ".git", "HEAD"), "ref: refs/heads/main\n");
+  await fsWrite(join(projectPath, ".pi-subagents", "artifacts", "status.json"), "{}\n", "utf8");
   await fsWrite(join(projectPath, "dist", "output.js"), "export {};\n", "utf8");
   await fsWrite(join(projectPath, "build", "output.js"), "export {};\n", "utf8");
   // A binary fixture (NUL-byte triggers binary detection).
@@ -242,6 +244,10 @@ async function main(): Promise<void> {
         !paths.some((p) => p.startsWith("directory:node_modules")),
       );
       assert("tree EXCLUDES .git", !paths.some((p) => p.startsWith("directory:.git")));
+      assert(
+        "tree EXCLUDES .pi-subagents",
+        !paths.some((p) => p.startsWith("directory:.pi-subagents")),
+      );
       assert("tree EXCLUDES dist", !paths.some((p) => p.startsWith("directory:dist")));
       assert("tree EXCLUDES build", !paths.some((p) => p.startsWith("directory:build")));
       assert(
@@ -265,6 +271,11 @@ async function main(): Promise<void> {
       const paths = flattenTree(r.body as TreeNode);
       assert("tree includes excluded node_modules", paths.includes("directory:node_modules"));
       assert("tree includes excluded .git", paths.includes("directory:.git"));
+      assert("tree includes excluded .pi-subagents", paths.includes("directory:.pi-subagents"));
+      assert(
+        "tree includes excluded .pi-subagents contents",
+        paths.includes("file:.pi-subagents/artifacts/status.json"),
+      );
       assert("tree includes excluded dist", paths.includes("directory:dist"));
       assert("tree includes excluded dist contents", paths.includes("file:dist/output.js"));
       assert("tree includes excluded build", paths.includes("directory:build"));

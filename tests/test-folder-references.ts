@@ -52,12 +52,14 @@ async function main(): Promise<void> {
   //   big.txt              (>128 KB, will defer)
   await mkdir(join(workspace, "src", "components"), { recursive: true });
   await mkdir(join(workspace, "docs with spaces"), { recursive: true });
+  await mkdir(join(workspace, ".pi-subagents", "artifacts"), { recursive: true });
   await writeFile(join(workspace, "src", "index.ts"), "export const x = 1;\n");
   await writeFile(
     join(workspace, "src", "components", "Button.tsx"),
     "export const Button = () => null;\n",
   );
   await writeFile(join(workspace, "docs with spaces", "readme.md"), "# Readme\n");
+  await writeFile(join(workspace, ".pi-subagents", "artifacts", "status.json"), "{}\n");
   await writeFile(join(workspace, "big.txt"), "x".repeat(150 * 1024));
 
   const fr = (await import(
@@ -170,6 +172,11 @@ async function main(): Promise<void> {
       assert(
         "listAllFiles emits the directory-with-spaces entry",
         all.includes("docs with spaces/"),
+        `got: ${all.join(",")}`,
+      );
+      assert(
+        "listAllFiles retains .pi-subagents outside the Files-tree-only filter",
+        all.includes(".pi-subagents/") && all.includes(".pi-subagents/artifacts/status.json"),
         `got: ${all.join(",")}`,
       );
     }
