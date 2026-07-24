@@ -18,6 +18,9 @@ services:
         # non-default pi-tools IDs (see ../docs/agent-tool-sandbox.md).
         PTOOLS_UID: ${AGENT_TOOL_UID:-1001}
         PTOOLS_GID: ${AGENT_TOOL_GID:-1001}
+        # Supply this from `git rev-parse --short HEAD` before building so
+        # the sidebar identifies the exact source revision in the image.
+        BUILD_COMMIT: ${BUILD_COMMIT:-unknown}
     image: pi-forge:latest
     container_name: ${CONTAINER_NAME:-pi-forge}
     restart: unless-stopped

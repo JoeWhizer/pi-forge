@@ -24,6 +24,8 @@ interface UiConfigState {
   workspaceRoot: string;
   /** Server build version (mirrors packages/server's package.json). */
   version: string;
+  /** Short Git commit embedded at image build time. */
+  buildCommit: string;
   /**
    * True when the server supports the browser password-change flow.
    * Defaults to true so the General settings tab still shows the
@@ -70,6 +72,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
   minimal: false,
   workspaceRoot: "",
   version: "",
+  buildCommit: "",
   passwordAuthEnabled: true,
   ldapEnabled: false,
   orchestrationEnabled: false,
@@ -95,6 +98,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
         minimal: cfg.minimal,
         workspaceRoot: cfg.workspaceRoot,
         version: cfg.version,
+        buildCommit: cfg.buildCommit,
         passwordAuthEnabled: cfg.passwordAuthEnabled,
         ldapEnabled: cfg.ldapEnabled,
         orchestrationEnabled: cfg.orchestrationEnabled,

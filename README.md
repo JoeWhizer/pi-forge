@@ -54,7 +54,7 @@ diffs — all from one tab.
 git clone https://github.com/Devin-Marks/pi-forge.git
 cd pi-forge
 cp docker/.env.example docker/.env       # edit auth + paths if you want
-cd docker && docker compose up -d --build
+BUILD_COMMIT=$(git rev-parse --short HEAD) docker compose -f docker/docker-compose.yml up -d --build
 ```
 
 ### npm (no Docker, runs from your shell)

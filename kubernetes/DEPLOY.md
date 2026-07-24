@@ -34,7 +34,7 @@ during rollouts.
 1. **Build and push the image** to a registry your cluster can pull from:
    ```bash
    # From the repo root
-   docker build -t <registry>/pi-forge:latest -f docker/Dockerfile .
+   docker build --build-arg BUILD_COMMIT="$(git rev-parse --short HEAD)" -t <registry>/pi-forge:latest -f docker/Dockerfile .
    docker push <registry>/pi-forge:latest
    ```
    Then update `image:` in `kube/deployment.yaml` (or

@@ -200,6 +200,7 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
   //   (the worst case is a confusing 400 on submit; better than
   //   silently hiding the form on a server that does support it).
   const version = typeof value.version === "string" ? value.version : "unknown";
+  const buildCommit = typeof value.buildCommit === "string" ? value.buildCommit : "unknown";
   const passwordAuthEnabled =
     typeof value.passwordAuthEnabled === "boolean" ? value.passwordAuthEnabled : true;
   // Default to false on older servers that predate the field. When
@@ -224,6 +225,7 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
     minimal: value.minimal,
     workspaceRoot: value.workspaceRoot,
     version,
+    buildCommit,
     passwordAuthEnabled,
     ldapEnabled,
     orchestrationEnabled,

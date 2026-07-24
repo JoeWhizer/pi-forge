@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +52,28 @@ const SERVER_VERSION: string = (() => {
     }
   }
   return "0.0.0";
+})();
+
+/**
+ * Resolve the commit embedded by the image build. Local source runs fall back
+ * to Git so the build label stays useful without requiring an environment
+ * variable. Docker images must receive PI_FORGE_BUILD_COMMIT at build time:
+ * the runtime image intentionally contains neither the Git checkout nor .git.
+ */
+const SERVER_BUILD_COMMIT: string = (() => {
+  const embedded = process.env.PI_FORGE_BUILD_COMMIT?.trim();
+  if (embedded !== undefined && /^[0-9a-f]{7,40}$/i.test(embedded)) return embedded;
+  try {
+    const commit = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (/^[0-9a-f]{7,40}$/i.test(commit)) return commit;
+  } catch {
+    // Published packages and runtime images do not include a Git checkout.
+  }
+  return "unknown";
 })();
 
 const themeColorsSchema = {
@@ -123,6 +146,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               "minimal",
               "workspaceRoot",
               "version",
+              "buildCommit",
               "passwordAuthEnabled",
               "ldapEnabled",
               "orchestrationEnabled",
@@ -143,6 +167,9 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               // so users can confirm which release they're hitting
               // without shelling into the container.
               version: { type: "string" },
+              // Short Git commit embedded into the container image at build
+              // time. Local source runs derive it from the current checkout.
+              buildCommit: { type: "string" },
               // True when the deployment supports the browser
               // password-change flow (env UI_PASSWORD set OR a
               // persisted password-hash exists). API-key-only
@@ -204,6 +231,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
         minimal: config.minimalUi,
         workspaceRoot: config.workspacePath,
         version: SERVER_VERSION,
+        buildCommit: SERVER_BUILD_COMMIT,
         passwordAuthEnabled: passwordAuthEnabled(),
         ldapEnabled: config.auth.ldap.enabled,
         orchestrationEnabled: isOrchestrationEnabled(),
