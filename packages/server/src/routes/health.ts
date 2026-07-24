@@ -147,6 +147,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               "workspaceRoot",
               "version",
               "buildCommit",
+              "deploymentBranch",
               "passwordAuthEnabled",
               "ldapEnabled",
               "orchestrationEnabled",
@@ -170,6 +171,9 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
               // Short Git commit embedded into the container image at build
               // time. Local source runs derive it from the current checkout.
               buildCommit: { type: "string" },
+              // Operator-defined deployment label from BRANCH. It is public
+              // metadata, validated during startup, and never contains secrets.
+              deploymentBranch: { type: "string", enum: ["test", "staging", "prod"] },
               // True when the deployment supports the browser
               // password-change flow (env UI_PASSWORD set OR a
               // persisted password-hash exists). API-key-only
@@ -232,6 +236,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
         workspaceRoot: config.workspacePath,
         version: SERVER_VERSION,
         buildCommit: SERVER_BUILD_COMMIT,
+        deploymentBranch: config.deploymentBranch,
         passwordAuthEnabled: passwordAuthEnabled(),
         ldapEnabled: config.auth.ldap.enabled,
         orchestrationEnabled: isOrchestrationEnabled(),

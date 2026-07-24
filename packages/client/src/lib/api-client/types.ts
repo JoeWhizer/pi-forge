@@ -311,6 +311,8 @@ export interface UiConfigResponse {
   version: string;
   /** Short Git commit embedded at image build time, or "unknown" when unavailable. */
   buildCommit: string;
+  /** Operator-defined public deployment label from BRANCH. */
+  deploymentBranch: "test" | "staging" | "prod";
   /**
    * True when the server supports the browser password-change flow
    * (env UI_PASSWORD set OR a persisted password-hash exists).

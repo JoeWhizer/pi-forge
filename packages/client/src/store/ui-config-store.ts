@@ -26,6 +26,8 @@ interface UiConfigState {
   version: string;
   /** Short Git commit embedded at image build time. */
   buildCommit: string;
+  /** Operator-defined public deployment label from BRANCH. */
+  deploymentBranch: "test" | "staging" | "prod";
   /**
    * True when the server supports the browser password-change flow.
    * Defaults to true so the General settings tab still shows the
@@ -73,6 +75,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
   workspaceRoot: "",
   version: "",
   buildCommit: "",
+  deploymentBranch: "test",
   passwordAuthEnabled: true,
   ldapEnabled: false,
   orchestrationEnabled: false,
@@ -99,6 +102,7 @@ export const useUiConfigStore = create<UiConfigState>((set) => ({
         workspaceRoot: cfg.workspaceRoot,
         version: cfg.version,
         buildCommit: cfg.buildCommit,
+        deploymentBranch: cfg.deploymentBranch,
         passwordAuthEnabled: cfg.passwordAuthEnabled,
         ldapEnabled: cfg.ldapEnabled,
         orchestrationEnabled: cfg.orchestrationEnabled,

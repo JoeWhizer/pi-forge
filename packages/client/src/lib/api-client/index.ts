@@ -201,6 +201,12 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
   //   silently hiding the form on a server that does support it).
   const version = typeof value.version === "string" ? value.version : "unknown";
   const buildCommit = typeof value.buildCommit === "string" ? value.buildCommit : "unknown";
+  const deploymentBranch =
+    value.deploymentBranch === "test" ||
+    value.deploymentBranch === "staging" ||
+    value.deploymentBranch === "prod"
+      ? value.deploymentBranch
+      : "test";
   const passwordAuthEnabled =
     typeof value.passwordAuthEnabled === "boolean" ? value.passwordAuthEnabled : true;
   // Default to false on older servers that predate the field. When
@@ -226,6 +232,7 @@ function vUiConfig(value: unknown, status: number): UiConfigResponse {
     workspaceRoot: value.workspaceRoot,
     version,
     buildCommit,
+    deploymentBranch,
     passwordAuthEnabled,
     ldapEnabled,
     orchestrationEnabled,
