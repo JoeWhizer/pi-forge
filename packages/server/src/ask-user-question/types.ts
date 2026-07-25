@@ -48,6 +48,17 @@ export interface AskUserQuestionParams {
 }
 
 /**
+ * Forge-native presentation metadata. Absent for normal questionnaires,
+ * preserving the plugin-compatible question flow.
+ */
+export interface ConfirmationPresentation {
+  kind: "confirmation";
+  extension?: string;
+  title: string;
+  message: string;
+}
+
+/**
  * Per-question answer envelope returned to the agent. Mirrors the
  * plugin's discriminator-by-kind shape so a single prompt
  * authored against the plugin's documented response can parse

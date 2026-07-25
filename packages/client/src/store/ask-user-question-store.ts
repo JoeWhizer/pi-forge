@@ -25,10 +25,18 @@ export interface AskQuestion {
   multiSelect?: boolean;
 }
 
+export interface ConfirmationPresentation {
+  kind: "confirmation";
+  extension?: string;
+  title: string;
+  message: string;
+}
+
 export interface PendingAskQuestion {
   requestId: string;
   sessionId: string;
   questions: AskQuestion[];
+  presentation?: ConfirmationPresentation;
 }
 
 interface AskUserQuestionState {

@@ -7,6 +7,7 @@ import {
   SessionManager,
   SettingsManager,
   type ExtensionCommandContextActions,
+  type ExtensionUIDialogOptions,
   type ExtensionUIContext,
   type PackageSource,
   type SessionInfo,
@@ -31,6 +32,12 @@ import {
   isGloballyEnabled as mcpIsGloballyEnabled,
 } from "./mcp/manager.js";
 import { createAskUserQuestionTool } from "./ask-user-question/tool.js";
+import { buildResult } from "./ask-user-question/envelope.js";
+import {
+  clearForSession as clearAskUserQuestionForSession,
+  getPendingForSession as getPendingAskUserQuestions,
+  registerPending,
+} from "./ask-user-question/registry.js";
 import { createTodoTool } from "./todo/tool.js";
 import {
   clearForSession as clearTodoForSession,
@@ -388,6 +395,11 @@ export function findLastAssistantErrorMessage(
 }
 
 const EXTENSION_UI_NOTIFICATION_MAX_LENGTH = 4_000;
+const EXTENSION_CONFIRM_TIMEOUT_MS = 5 * 60 * 1_000;
+
+function safeExtensionDialogText(value: string | undefined, maxLength: number): string {
+  return (value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
 
 function emitExtensionUiNotification(
   live: LiveSession,
@@ -413,8 +425,8 @@ function emitExtensionUiNotification(
 
 /**
  * Bind the SDK extension command context to Pi Forge's authenticated SSE
- * session. Browser clients can show notifications, while terminal-only dialogs
- * fail safely and explain their unsupported state to the user.
+ * session. Browser clients can show notifications and confirmations, while
+ * unsupported terminal-only dialogs fail safely with an SSE warning.
  */
 async function bindWebExtensionContext(live: LiveSession): Promise<void> {
   const unsupportedDialog = (
@@ -436,9 +448,49 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
       unsupportedDialog("select", title);
       return undefined;
     },
-    confirm: async (title: string) => {
-      unsupportedDialog("confirm", title);
-      return false;
+    confirm: async (title: string, message: string, opts?: ExtensionUIDialogOptions) => {
+      // The UI presents one pending interaction per session. Do not replace an
+      // existing questionnaire or confirmation with a later extension prompt.
+      if (getPendingAskUserQuestions(live.sessionId).length > 0) return false;
+      const confirmationTitle = safeExtensionDialogText(title, 160) || "Confirmation";
+      const confirmationMessage = safeExtensionDialogText(message, 4_000);
+      const extension = extensionNameFromStack(new Error().stack);
+      const timeoutMs =
+        typeof opts?.timeout === "number" && Number.isFinite(opts.timeout)
+          ? Math.min(Math.max(Math.floor(opts.timeout), 1), EXTENSION_CONFIRM_TIMEOUT_MS)
+          : EXTENSION_CONFIRM_TIMEOUT_MS;
+      const { result } = registerPending({
+        sessionId: live.sessionId,
+        questions: [
+          {
+            question: confirmationTitle,
+            header: "Confirm",
+            options: [
+              { label: "Approve", description: "Approve this extension action." },
+              { label: "Reject", description: "Reject this extension action." },
+            ],
+          },
+        ],
+        presentation: {
+          kind: "confirmation",
+          ...(extension !== undefined ? { extension } : {}),
+          title: confirmationTitle,
+          message: confirmationMessage,
+        },
+        ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+        timeoutMs,
+        timeoutResult: buildResult([], {
+          cancelled: true,
+          error: "confirmation_timed_out",
+          questionCount: 1,
+        }),
+      });
+      try {
+        const answer = await result;
+        return answer.details.cancelled !== true && answer.details.answers[0]?.answer === "Approve";
+      } catch {
+        return false;
+      }
     },
     input: async (title: string) => {
       unsupportedDialog("input", title);
@@ -1372,6 +1424,9 @@ export async function disposeSession(sessionId: string): Promise<boolean> {
     } catch {
       // ignore — SDK doesn't currently throw, but H2-defensive
     }
+    // Pending questions are in-memory interaction state, not session history.
+    // Reject them before a later resume can re-deliver a stale prompt.
+    clearAskUserQuestionForSession(sessionId);
     // Drop the todo cache for this session. The cache is a fast
     // path; even without this, a future session with the same id
     // would recover via replay-on-miss. Cleaner to be explicit.

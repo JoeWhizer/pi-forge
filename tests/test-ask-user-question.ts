@@ -16,8 +16,11 @@
  *     and emits the cancelled event to clients
  *   - re-delivery: getPendingForSession returns open entries (the
  *     SSE bridge re-emits them on snapshot)
+ *   - confirmation presentation metadata propagation and strict response
+ *     validation, while normal questionnaire responses remain unchanged
  *   - 404 on cross-session spoofing: a requestId from session A
  *     posted to session B's answer route is rejected
+ *   - session disposal rejects and clears pending questions
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -84,11 +87,20 @@ interface RegistryModule {
 }
 
 interface AskRegistryModule {
-  registerPending: (args: { sessionId: string; questions: unknown[]; signal?: AbortSignal }) => {
+  registerPending: (args: {
+    sessionId: string;
+    questions: unknown[];
+    presentation?: { kind: "confirmation"; title: string; message: string; extension?: string };
+    signal?: AbortSignal;
+  }) => {
     requestId: string;
     result: Promise<unknown>;
   };
-  getPendingForSession: (sessionId: string) => { requestId: string; questions: unknown[] }[];
+  getPendingForSession: (sessionId: string) => {
+    requestId: string;
+    questions: unknown[];
+    presentation?: { kind: string; title: string; message: string; extension?: string };
+  }[];
   _resetForTests: () => void;
 }
 
@@ -413,6 +425,115 @@ async function main(): Promise<void> {
     );
     assert("SSE: cancelled fanout after answer", sawCancelled);
 
+    // -------- Confirmation metadata + strict response validation --------
+    const { requestId: confirmationReqId, result: confirmationResult } =
+      askRegistry.registerPending({
+        sessionId: live.sessionId,
+        questions: [
+          {
+            question: "Approve extension action?",
+            header: "Confirm",
+            options: [
+              { label: "Approve", description: "approve" },
+              { label: "Reject", description: "reject" },
+            ],
+          },
+        ],
+        presentation: {
+          kind: "confirmation",
+          extension: "test-extension.js",
+          title: "Approve extension action?",
+          message: "This action needs approval.",
+        },
+      });
+    const confirmationPending = await jget(
+      base,
+      `/api/v1/sessions/${live.sessionId}/ask-user-question/pending`,
+    );
+    const confirmationEntry = (
+      confirmationPending.body as {
+        pending: { requestId: string; presentation?: { kind?: string; extension?: string } }[];
+      }
+    ).pending.find((entry) => entry.requestId === confirmationReqId);
+    assert(
+      "confirmation metadata is preserved in pending response",
+      confirmationEntry?.presentation?.kind === "confirmation" &&
+        confirmationEntry.presentation.extension === "test-extension.js",
+      JSON.stringify(confirmationPending.body),
+    );
+    for (const [label, body] of [
+      ["missing answer", { requestId: confirmationReqId, answers: [] }],
+      [
+        "wrong question index",
+        {
+          requestId: confirmationReqId,
+          answers: [
+            {
+              questionIndex: 1,
+              question: "Approve extension action?",
+              kind: "option",
+              answer: "Approve",
+            },
+          ],
+        },
+      ],
+      [
+        "wrong question",
+        {
+          requestId: confirmationReqId,
+          answers: [{ questionIndex: 0, question: "other", kind: "option", answer: "Approve" }],
+        },
+      ],
+      [
+        "invalid option",
+        {
+          requestId: confirmationReqId,
+          answers: [
+            {
+              questionIndex: 0,
+              question: "Approve extension action?",
+              kind: "option",
+              answer: "Other",
+            },
+          ],
+        },
+      ],
+    ] as const) {
+      const response = await jsend(
+        base,
+        "POST",
+        `/api/v1/sessions/${live.sessionId}/ask-user-question/answer`,
+        body,
+      );
+      assert(`confirmation ${label} → 400`, response.status === 400, JSON.stringify(response.body));
+    }
+    const confirmationAnswer = await jsend(
+      base,
+      "POST",
+      `/api/v1/sessions/${live.sessionId}/ask-user-question/answer`,
+      {
+        requestId: confirmationReqId,
+        answers: [
+          {
+            questionIndex: 0,
+            question: "Approve extension action?",
+            kind: "option",
+            answer: "Reject",
+          },
+        ],
+      },
+    );
+    assert("valid confirmation Reject → 204", confirmationAnswer.status === 204);
+    const confirmationEnvelope = (await confirmationResult) as {
+      details: { answers: { answer: string }[]; cancelled: boolean };
+    };
+    assert(
+      "valid confirmation resolves Reject response",
+      confirmationEnvelope.details.cancelled === false &&
+        confirmationEnvelope.details.answers[0]?.answer === "Reject",
+      JSON.stringify(confirmationEnvelope.details),
+    );
+
     // -------- Cancel path --------
     const { requestId: cancelReqId, result: cancelResult } = askRegistry.registerPending({
       sessionId: live.sessionId,
@@ -441,7 +562,7 @@ async function main(): Promise<void> {
     assert("cancel: no answers", cancelEnvelope.details.answers.length === 0);
 
     // -------- Cross-session spoofing --------
-    const { requestId: spoofReqId } = askRegistry.registerPending({
+    const { requestId: spoofReqId, result: spoofResult } = askRegistry.registerPending({
       sessionId: live.sessionId,
       questions: [
         {
@@ -461,6 +582,9 @@ async function main(): Promise<void> {
       { requestId: spoofReqId, cancelled: true, answers: [] },
     );
     assert("cross-session spoof → 404 (session_not_found)", spoof.status === 404);
+    // This request remains open until session disposal; mark its expected
+    // rejection handled so Node does not treat it as an unhandled rejection.
+    void spoofResult.catch(() => undefined);
 
     // -------- Abort path --------
     const ac2 = new AbortController();
@@ -487,9 +611,38 @@ async function main(): Promise<void> {
     }
     assert("abort: promise rejects with 'aborted'", abortRejected);
 
+    const { requestId: disposeReqId, result: disposeResult } = askRegistry.registerPending({
+      sessionId: live.sessionId,
+      questions: [
+        {
+          question: "Dispose?",
+          header: "Dispose",
+          options: [
+            { label: "Yes", description: "yes" },
+            { label: "No", description: "no" },
+          ],
+        },
+      ],
+      presentation: {
+        kind: "confirmation",
+        title: "Dispose?",
+        message: "Must not survive disposal.",
+      },
+    });
+    const disposeRejected = disposeResult.then(
+      () => false,
+      (err) => err instanceof Error && err.message === "session_disposed",
+    );
     ac.abort();
     await sseDone.catch(() => undefined);
     await registry.disposeSession(live.sessionId);
+    assert("dispose rejects pending confirmation", await disposeRejected);
+    assert(
+      "dispose clears pending confirmations",
+      !askRegistry
+        .getPendingForSession(live.sessionId)
+        .some((entry) => entry.requestId === disposeReqId),
+    );
   } finally {
     await fastify.close();
     await rm(workspacePath, { recursive: true, force: true }).catch(() => undefined);

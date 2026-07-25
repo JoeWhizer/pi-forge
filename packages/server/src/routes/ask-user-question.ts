@@ -50,6 +50,20 @@ interface AnswerBody {
   answers?: QuestionAnswer[];
 }
 
+function isValidConfirmationResponse(body: AnswerBody, expectedQuestion: string): boolean {
+  if (body.cancelled === true || !Array.isArray(body.answers) || body.answers.length !== 1) {
+    return false;
+  }
+  const [answer] = body.answers;
+  return (
+    answer !== undefined &&
+    answer.questionIndex === 0 &&
+    answer.question === expectedQuestion &&
+    answer.kind === "option" &&
+    (answer.answer === "Approve" || answer.answer === "Reject")
+  );
+}
+
 export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { id: string } }>(
     "/sessions/:id/ask-user-question/pending",
@@ -78,6 +92,16 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
                   properties: {
                     requestId: { type: "string" },
                     questions: { type: "array" },
+                    presentation: {
+                      type: "object",
+                      required: ["kind", "title", "message"],
+                      properties: {
+                        kind: { type: "string", const: "confirmation" },
+                        extension: { type: "string" },
+                        title: { type: "string" },
+                        message: { type: "string" },
+                      },
+                    },
                   },
                 },
               },
@@ -95,6 +119,7 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
       const pending = getPendingForSession(req.params.id).map((p) => ({
         requestId: p.requestId,
         questions: p.questions,
+        ...(p.presentation !== undefined ? { presentation: p.presentation } : {}),
       }));
       return { pending };
     },
@@ -119,6 +144,7 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
         body: answerBodySchema,
         response: {
           204: { type: "null" },
+          400: errorSchema,
           404: errorSchema,
         },
       },
@@ -137,6 +163,12 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
       const pending = getPendingForSession(req.params.id).find(
         (p) => p.requestId === req.body.requestId,
       );
+      if (
+        pending?.presentation?.kind === "confirmation" &&
+        !isValidConfirmationResponse(req.body, pending.questions[0]?.question ?? "")
+      ) {
+        return reply.code(400).send({ error: "invalid_confirmation_response" });
+      }
       const questionCount = pending?.questions.length ?? answers.length;
       const envelope = buildResult(answers, { cancelled, questionCount });
       const ok = answerPending(req.body.requestId, req.params.id, envelope);

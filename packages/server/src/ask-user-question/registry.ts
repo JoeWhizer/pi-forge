@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AskUserQuestionResult, Question } from "./types.js";
+import type { AskUserQuestionResult, ConfirmationPresentation, Question } from "./types.js";
 
 /**
  * In-memory registry of `ask_user_question` requests waiting on a
@@ -17,11 +17,14 @@ export interface PendingAskUserQuestion {
   requestId: string;
   sessionId: string;
   questions: Question[];
+  presentation?: ConfirmationPresentation;
   createdAt: Date;
 }
 
 interface Entry extends PendingAskUserQuestion {
   resolve: (result: AskUserQuestionResult) => void;
+  reject: (error: Error) => void;
+  cleanup: () => void;
 }
 
 const byRequestId = new Map<string, Entry>();
@@ -41,7 +44,13 @@ type Listener = (event: AskQuestionEvent) => void;
 const listeners = new Set<Listener>();
 
 export type AskQuestionEvent =
-  | { type: "ask_user_question"; sessionId: string; requestId: string; questions: Question[] }
+  | {
+      type: "ask_user_question";
+      sessionId: string;
+      requestId: string;
+      questions: Question[];
+      presentation?: ConfirmationPresentation;
+    }
   | { type: "ask_user_question_cancelled"; sessionId: string; requestId: string; reason: string };
 
 export function subscribe(fn: Listener): () => void {
@@ -63,19 +72,17 @@ function notify(event: AskQuestionEvent): void {
 
 /**
  * Register a pending request. The returned promise resolves when
- * the browser answers, or when the caller's `signal` aborts (in
- * which case the tool result will be a cancelled envelope built by
- * the caller).
- *
- * `signal` is honored: if the agent is aborted (e.g. user hit Stop)
- * the entry is dropped and the promise rejects with an
- * `AbortError`. The caller catches that and returns the cancelled
- * envelope so the agent sees a clean tool result.
+ * the browser answers, when an optional timeout elapses, or when
+ * the caller's `signal` aborts. Timeout is intentionally opt-in:
+ * normal questionnaires retain their existing unbounded behavior.
  */
 export function registerPending(args: {
   sessionId: string;
   questions: Question[];
+  presentation?: ConfirmationPresentation;
   signal?: AbortSignal;
+  timeoutMs?: number;
+  timeoutResult?: AskUserQuestionResult;
 }): { requestId: string; result: Promise<AskUserQuestionResult> } {
   const requestId = randomUUID();
   let resolveFn!: (r: AskUserQuestionResult) => void;
@@ -84,12 +91,23 @@ export function registerPending(args: {
     resolveFn = resolve;
     rejectFn = reject;
   });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const cleanup = (): void => {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (onAbort !== undefined && args.signal !== undefined) {
+      args.signal.removeEventListener("abort", onAbort);
+    }
+  };
   const entry: Entry = {
     requestId,
     sessionId: args.sessionId,
     questions: args.questions,
+    ...(args.presentation !== undefined ? { presentation: args.presentation } : {}),
     createdAt: new Date(),
     resolve: resolveFn,
+    reject: rejectFn,
+    cleanup,
   };
   byRequestId.set(requestId, entry);
   const set = bySessionId.get(args.sessionId) ?? new Set<string>();
@@ -97,10 +115,7 @@ export function registerPending(args: {
   bySessionId.set(args.sessionId, set);
 
   if (args.signal !== undefined) {
-    const onAbort = (): void => {
-      // Drop the entry and tell SSE clients to close the modal.
-      // The tool's execute() catches the rejection and returns a
-      // cancelled envelope to the agent.
+    onAbort = (): void => {
       if (byRequestId.has(requestId)) {
         removeEntry(requestId);
         notify({
@@ -116,11 +131,30 @@ export function registerPending(args: {
     else args.signal.addEventListener("abort", onAbort, { once: true });
   }
 
+  // An already-aborted signal rejects synchronously above. Do not create a
+  // timer or emit a stale pending event after the entry was removed.
+  if (!byRequestId.has(requestId)) return { requestId, result };
+
+  if (args.timeoutMs !== undefined && args.timeoutResult !== undefined) {
+    timeout = setTimeout(() => {
+      if (!byRequestId.has(requestId)) return;
+      removeEntry(requestId);
+      notify({
+        type: "ask_user_question_cancelled",
+        sessionId: args.sessionId,
+        requestId,
+        reason: "timed_out",
+      });
+      resolveFn(args.timeoutResult!);
+    }, args.timeoutMs);
+  }
+
   notify({
     type: "ask_user_question",
     sessionId: args.sessionId,
     requestId,
     questions: args.questions,
+    ...(args.presentation !== undefined ? { presentation: args.presentation } : {}),
   });
   return { requestId, result };
 }
@@ -128,6 +162,7 @@ export function registerPending(args: {
 function removeEntry(requestId: string): void {
   const e = byRequestId.get(requestId);
   if (e === undefined) return;
+  e.cleanup();
   byRequestId.delete(requestId);
   const set = bySessionId.get(e.sessionId);
   if (set !== undefined) {
@@ -138,9 +173,8 @@ function removeEntry(requestId: string): void {
 
 /**
  * Resolve the pending entry with the user's answers. Idempotent —
- * if the entry was already resolved (e.g. concurrent answer +
- * abort race), this returns `false` rather than throwing so the
- * route layer can decide whether to 200 or 404.
+ * if the entry was already resolved (e.g. concurrent answer + abort race), this returns
+ * `false` rather than throwing so the route layer can decide whether to 200 or 404.
  */
 export function answerPending(
   requestId: string,
@@ -151,9 +185,6 @@ export function answerPending(
   if (e === undefined) return false;
   if (e.sessionId !== expectedSessionId) return false;
   removeEntry(requestId);
-  // SSE clients listen for "the modal should now close" — emit a
-  // cancelled event with reason "answered" so the modal tears down
-  // on every other browser tab watching the same session.
   notify({
     type: "ask_user_question_cancelled",
     sessionId: e.sessionId,
@@ -164,21 +195,33 @@ export function answerPending(
   return true;
 }
 
-/**
- * Explicit cancel from the client side (user clicked "Chat about
- * this" or closed the modal). Same shape as answer, but the
- * caller-supplied envelope carries `cancelled: true` and an
- * empty `answers` array — or partial answers if the user filled
- * some tabs before bailing.
- */
+/** Explicit cancel from the client side. */
 export function cancelPending(
   requestId: string,
   expectedSessionId: string,
   result: AskUserQuestionResult,
 ): boolean {
-  // Same path as answerPending — the distinction is in the envelope
-  // shape, not the registry mechanics.
   return answerPending(requestId, expectedSessionId, result);
+}
+
+/**
+ * Reject and remove every open request for a disposed session. Pending requests
+ * are in-memory only, but must not be replayed if the session is resumed.
+ */
+export function clearForSession(sessionId: string, reason = "session_disposed"): void {
+  const ids = [...(bySessionId.get(sessionId) ?? [])];
+  for (const requestId of ids) {
+    const entry = byRequestId.get(requestId);
+    if (entry === undefined) continue;
+    removeEntry(requestId);
+    notify({
+      type: "ask_user_question_cancelled",
+      sessionId,
+      requestId,
+      reason,
+    });
+    entry.reject(new Error(reason));
+  }
 }
 
 export function getPendingForSession(sessionId: string): PendingAskUserQuestion[] {
@@ -192,6 +235,7 @@ export function getPendingForSession(sessionId: string): PendingAskUserQuestion[
         requestId: e.requestId,
         sessionId: e.sessionId,
         questions: e.questions,
+        ...(e.presentation !== undefined ? { presentation: e.presentation } : {}),
         createdAt: e.createdAt,
       });
     }
@@ -199,12 +243,9 @@ export function getPendingForSession(sessionId: string): PendingAskUserQuestion[
   return out;
 }
 
-/**
- * Test-only reset. Clears all pending state without notifying
- * listeners — call between integration test cases to avoid
- * cross-contamination.
- */
+/** Test-only reset. Clears all pending state without notifying listeners. */
 export function _resetForTests(): void {
+  for (const entry of byRequestId.values()) entry.cleanup();
   byRequestId.clear();
   bySessionId.clear();
   listeners.clear();

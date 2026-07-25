@@ -98,9 +98,13 @@ async function main(): Promise<void> {
       '  pi.registerCommand("test-command", {',
       '    description: "Set the session name from command arguments",',
       "    handler: async (args, ctx) => {",
-      '      await ctx.ui.confirm("Test dialog", "This dialog is intentionally unsupported in Pi Forge");',
-      '      ctx.ui.notify(`Command feedback: ${args}`, "info");',
-      "      pi.setSessionName(`extension:${args}`);",
+      '      const opts = args === "abort" ? (() => { const controller = new AbortController(); setTimeout(() => controller.abort(), 10); return { signal: controller.signal }; })() : undefined;',
+      '      const first = ctx.ui.confirm("Test dialog", "Approve this test extension action?", opts);',
+      '      const second = args === "double" ? await ctx.ui.confirm("Second dialog", "This must fail closed.") : undefined;',
+      "      const approved = await first;",
+      '      const suffix = second === undefined ? "" : `:${second}`;',
+      '      ctx.ui.notify(`Command feedback: ${args}:${approved}${suffix}`, "info");',
+      "      pi.setSessionName(`extension:${args}:${approved}${suffix}`);",
       "    },",
       "  });",
       "}",
@@ -176,19 +180,9 @@ async function main(): Promise<void> {
       signal: sseController.signal,
     });
     assert("open SSE stream for extension rename → 200", stream.status === 200);
-    const extensionEvents =
+    const confirmationEvent =
       stream.status === 200
-        ? waitForSseEvents(stream, [
-            (event) =>
-              event.type === "extension_ui_notification" &&
-              event.message ===
-                'Extension "test-command.js" requested an interactive confirm dialog ("Test dialog"), which Pi Forge does not support.',
-            (event) =>
-              event.type === "extension_ui_notification" &&
-              event.message === "Command feedback: normal" &&
-              event.level === "info",
-            (event) => event.type === "session_renamed" && event.name === "extension:normal",
-          ])
+        ? waitForSseEvents(stream, [(event) => event.type === "ask_user_question"])
         : undefined;
 
     const invoke = await request(base, `/api/v1/sessions/${sessionId}/prompt`, {
@@ -201,15 +195,15 @@ async function main(): Promise<void> {
       invoke.status === 202,
       JSON.stringify(invoke.body),
     );
-    let receivedEvents: Record<string, unknown>[] | undefined;
+    let confirmation: Record<string, unknown> | undefined;
     try {
-      if (invoke.status === 202 && extensionEvents !== undefined) {
+      if (invoke.status === 202 && confirmationEvent !== undefined) {
         await new Promise((resolveFn) => setTimeout(resolveFn, 25));
-        receivedEvents = await Promise.race([
-          extensionEvents,
+        [confirmation] = await Promise.race([
+          confirmationEvent,
           new Promise<never>((_, reject) =>
             setTimeout(
-              () => reject(new Error("timed out waiting for extension UI SSE events")),
+              () => reject(new Error("timed out waiting for confirmation SSE event")),
               1_000,
             ),
           ),
@@ -217,35 +211,46 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       assert(
-        "extension UI feedback reaches the authenticated session SSE stream",
+        "extension confirmation reaches the authenticated session SSE stream",
         false,
         err instanceof Error ? err.message : String(err),
       );
     } finally {
       // Always close the stream: Fastify.close() waits for open SSE clients.
       sseController.abort();
-      await extensionEvents?.catch(() => undefined);
+      await confirmationEvent?.catch(() => undefined);
     }
-    const [dialogFallback, notification, rename] = receivedEvents ?? [];
+    const presentation = confirmation?.presentation as
+      | { kind?: string; title?: string; message?: string; extension?: string }
+      | undefined;
     assert(
-      "unsupported extension dialog has a visible SSE fallback",
-      dialogFallback?.level === "warning",
-      JSON.stringify(dialogFallback),
+      "extension confirm emits Forge-native confirmation SSE",
+      presentation?.kind === "confirmation" &&
+        presentation.title === "Test dialog" &&
+        presentation.message === "Approve this test extension action?" &&
+        presentation.extension === "test-command.js",
+      JSON.stringify(confirmation),
     );
-    assert(
-      "extension ctx.ui.notify reaches the authenticated session SSE stream",
-      notification?.sessionId === sessionId && notification?.message === "Command feedback: normal",
-      JSON.stringify(notification),
-    );
-    assert(
-      "extension session_info_changed reaches UI as session_renamed SSE",
-      rename?.sessionId === sessionId && rename?.name === "extension:normal",
-      JSON.stringify(rename),
-    );
+    const confirmationRequestId = confirmation?.requestId;
+    const reject =
+      typeof confirmationRequestId === "string"
+        ? await request(base, `/api/v1/sessions/${sessionId}/ask-user-question/answer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: confirmationRequestId,
+              answers: [
+                { questionIndex: 0, question: "Test dialog", kind: "option", answer: "Reject" },
+              ],
+            }),
+          })
+        : { status: 0, body: undefined };
+    assert("Reject confirmation answer → 204", reject.status === 204, JSON.stringify(reject.body));
+    await new Promise((resolveFn) => setTimeout(resolveFn, 25));
     const afterNormal = await request(base, `/api/v1/sessions/${sessionId}`);
     assert(
-      "normal prompt path invokes extension handler with args",
-      (afterNormal.body as { name?: string }).name === "extension:normal",
+      "Reject makes extension confirm return false",
+      (afterNormal.body as { name?: string }).name === "extension:normal:false",
       JSON.stringify(afterNormal.body),
     );
     const afterCommandMessages = await request(base, `/api/v1/sessions/${sessionId}/messages`);
@@ -269,11 +274,106 @@ async function main(): Promise<void> {
       JSON.stringify(streamingInvoke.body),
     );
     await new Promise((resolveFn) => setTimeout(resolveFn, 25));
+    const pendingStreaming = await request(
+      base,
+      `/api/v1/sessions/${sessionId}/ask-user-question/pending`,
+    );
+    const streamingRequestId = (pendingStreaming.body as { pending?: { requestId: string }[] })
+      .pending?.[0]?.requestId;
+    assert(
+      "streaming command opens a pending confirmation",
+      typeof streamingRequestId === "string",
+      JSON.stringify(pendingStreaming.body),
+    );
+    const approve =
+      typeof streamingRequestId === "string"
+        ? await request(base, `/api/v1/sessions/${sessionId}/ask-user-question/answer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: streamingRequestId,
+              answers: [
+                { questionIndex: 0, question: "Test dialog", kind: "option", answer: "Approve" },
+              ],
+            }),
+          })
+        : { status: 0, body: undefined };
+    assert(
+      "Approve confirmation answer → 204",
+      approve.status === 204,
+      JSON.stringify(approve.body),
+    );
+    await new Promise((resolveFn) => setTimeout(resolveFn, 25));
     const afterStreaming = await request(base, `/api/v1/sessions/${sessionId}`);
     assert(
-      "streaming prompt path invokes extension handler immediately",
-      (afterStreaming.body as { name?: string }).name === "extension:streaming",
+      "explicit Approve makes extension confirm return true",
+      (afterStreaming.body as { name?: string }).name === "extension:streaming:true",
       JSON.stringify(afterStreaming.body),
+    );
+
+    const doubleInvoke = await request(base, `/api/v1/sessions/${sessionId}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "/test-command double" }),
+    });
+    assert("extension command with two confirms → 202", doubleInvoke.status === 202);
+    await new Promise((resolveFn) => setTimeout(resolveFn, 25));
+    const pendingDouble = await request(base, `/api/v1/sessions/${sessionId}/ask-user-question/pending`);
+    const doubleRequestId = (pendingDouble.body as { pending?: { requestId: string }[] }).pending?.[0]
+      ?.requestId;
+    assert(
+      "second extension confirmation does not replace the first",
+      typeof doubleRequestId === "string" &&
+        (pendingDouble.body as { pending?: unknown[] }).pending?.length === 1,
+      JSON.stringify(pendingDouble.body),
+    );
+    const answerDouble =
+      typeof doubleRequestId === "string"
+        ? await request(base, `/api/v1/sessions/${sessionId}/ask-user-question/answer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: doubleRequestId,
+              answers: [
+                { questionIndex: 0, question: "Test dialog", kind: "option", answer: "Approve" },
+              ],
+            }),
+          })
+        : { status: 0, body: undefined };
+    assert(
+      "Approve first of two confirmations → 204",
+      answerDouble.status === 204,
+      JSON.stringify(answerDouble.body),
+    );
+    await new Promise((resolveFn) => setTimeout(resolveFn, 25));
+    const afterDouble = await request(base, `/api/v1/sessions/${sessionId}`);
+    assert(
+      "second extension confirmation returns false fail-closed",
+      (afterDouble.body as { name?: string }).name === "extension:double:true:false",
+      JSON.stringify(afterDouble.body),
+    );
+
+    const abortInvoke = await request(base, `/api/v1/sessions/${sessionId}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "/test-command abort" }),
+    });
+    assert("extension command with aborted confirm → 202", abortInvoke.status === 202);
+    await new Promise((resolveFn) => setTimeout(resolveFn, 50));
+    const afterAbort = await request(base, `/api/v1/sessions/${sessionId}`);
+    assert(
+      "aborted confirmation returns false and cleans up",
+      (afterAbort.body as { name?: string }).name === "extension:abort:false",
+      JSON.stringify(afterAbort.body),
+    );
+    const afterAbortPending = await request(
+      base,
+      `/api/v1/sessions/${sessionId}/ask-user-question/pending`,
+    );
+    assert(
+      "aborted confirmation leaves no pending request",
+      (afterAbortPending.body as { pending?: unknown[] }).pending?.length === 0,
+      JSON.stringify(afterAbortPending.body),
     );
 
     // The SDK deliberately defers JSONL creation until an assistant message

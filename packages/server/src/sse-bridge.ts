@@ -574,6 +574,7 @@ export function createSSEClient(reply: FastifyReply, live: LiveSession): SSEClie
           sessionId: p.sessionId,
           requestId: p.requestId,
           questions: p.questions,
+          ...(p.presentation !== undefined ? { presentation: p.presentation } : {}),
         }),
       );
     }

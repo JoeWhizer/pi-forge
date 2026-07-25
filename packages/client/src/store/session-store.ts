@@ -14,7 +14,11 @@ type SessionActivityEvent =
       reason?: "completed" | "disposed";
     };
 import { postCrossTab, subscribeCrossTab } from "../lib/cross-tab";
-import { useAskUserQuestionStore, type PendingAskQuestion } from "./ask-user-question-store";
+import {
+  useAskUserQuestionStore,
+  type ConfirmationPresentation,
+  type PendingAskQuestion,
+} from "./ask-user-question-store";
 import { useTodoStore, type Task as TodoTaskShape } from "./todo-store";
 import { useProcessesStore, type ProcessInfo as ProcessShape } from "./processes-store";
 
@@ -961,6 +965,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
  * to stay correct without modelling every incremental delta — the bandwidth
  * is fine for chat-tier traffic and avoids drift between SDK message shapes.
  */
+function parseConfirmationPresentation(
+  value: unknown,
+): ConfirmationPresentation | undefined | null {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const presentation = value as Record<string, unknown>;
+  if (
+    presentation.kind !== "confirmation" ||
+    typeof presentation.title !== "string" ||
+    presentation.title.length === 0 ||
+    typeof presentation.message !== "string" ||
+    (presentation.extension !== undefined && typeof presentation.extension !== "string")
+  ) {
+    return null;
+  }
+  return {
+    kind: "confirmation",
+    title: presentation.title,
+    message: presentation.message,
+    ...(typeof presentation.extension === "string" ? { extension: presentation.extension } : {}),
+  };
+}
+
 function applyEvent(
   set: (update: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void,
   get: () => SessionState,
@@ -1271,11 +1298,13 @@ function applyEvent(
   if (event.type === "ask_user_question") {
     const requestId = typeof event.requestId === "string" ? event.requestId : undefined;
     const questions = Array.isArray(event.questions) ? event.questions : undefined;
-    if (requestId === undefined || questions === undefined) return;
+    const presentation = parseConfirmationPresentation(event.presentation);
+    if (requestId === undefined || questions === undefined || presentation === null) return;
     useAskUserQuestionStore.getState().setPending({
       requestId,
       sessionId,
       questions: questions as PendingAskQuestion["questions"],
+      ...(presentation !== undefined ? { presentation } : {}),
     });
     return;
   }

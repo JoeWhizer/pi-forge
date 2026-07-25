@@ -47,6 +47,13 @@ interface PendingAnswer {
 }
 
 function PanelBody({ pending }: { pending: PendingAskQuestion }) {
+  if (pending.presentation?.kind === "confirmation") {
+    return <ConfirmationPanel pending={pending} />;
+  }
+  return <QuestionnairePanel pending={pending} />;
+}
+
+function QuestionnairePanel({ pending }: { pending: PendingAskQuestion }) {
   const clearPending = useAskUserQuestionStore((s) => s.clearPending);
   const [tab, setTab] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -260,6 +267,82 @@ function PanelBody({ pending }: { pending: PendingAskQuestion }) {
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+function ConfirmationPanel({ pending }: { pending: PendingAskQuestion }) {
+  const clearPending = useAskUserQuestionStore((s) => s.clearPending);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const presentation = pending.presentation!;
+
+  const respond = async (answer: "Approve" | "Reject"): Promise<void> => {
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await api.submitAskUserQuestionAnswer(pending.sessionId, {
+        requestId: pending.requestId,
+        answers: [
+          {
+            questionIndex: 0,
+            question: presentation.title,
+            kind: "option",
+            answer,
+          },
+        ],
+      });
+      clearPending(pending.sessionId, pending.requestId);
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.code}: ${err.message}` : (err as Error).message);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="flex shrink-0 flex-col overflow-hidden border-t border-amber-700/50 bg-neutral-900/40 light:border-amber-400 light:bg-amber-50/60">
+      <header className="border-b border-neutral-800 px-4 py-2 light:border-neutral-200">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 light:text-amber-700">
+          Extension confirmation
+        </span>
+        {presentation.extension !== undefined && presentation.extension.length > 0 && (
+          <span className="ml-2 text-[10px] text-neutral-500">from {presentation.extension}</span>
+        )}
+      </header>
+      {error !== undefined && (
+        <div className="border-b border-red-700/40 bg-red-900/20 px-4 py-2 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800">
+          {error}
+        </div>
+      )}
+      <div className="px-4 py-3">
+        <h2 className="text-base font-medium text-neutral-100 light:text-neutral-900">
+          {presentation.title}
+        </h2>
+        {presentation.message.length > 0 && (
+          <p className="mt-2 whitespace-pre-wrap text-sm text-neutral-300 light:text-neutral-700">
+            {presentation.message}
+          </p>
+        )}
+      </div>
+      <footer className="flex justify-end gap-2 border-t border-neutral-800 px-4 py-2 light:border-neutral-200">
+        <button
+          type="button"
+          onClick={() => void respond("Reject")}
+          disabled={submitting}
+          className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
+        >
+          Reject
+        </button>
+        <button
+          type="button"
+          onClick={() => void respond("Approve")}
+          disabled={submitting}
+          className="flex items-center gap-1 rounded bg-emerald-700 px-3 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-50"
+        >
+          {submitting ? <Loader2 size={12} className="animate-spin" /> : null}
+          Approve
+        </button>
+      </footer>
     </div>
   );
 }
