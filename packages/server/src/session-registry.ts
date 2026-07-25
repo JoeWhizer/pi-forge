@@ -53,6 +53,7 @@ import {
   formatUnsupportedExtensionDialog,
   type UnsupportedExtensionDialog,
 } from "./extension-ui-attribution.js";
+import { publishSessionActivity, type SessionActivity } from "./session-activity.js";
 
 /**
  * Minimal SSE client contract used by the registry to fan out events.
@@ -190,6 +191,16 @@ export class ExternalSubagentActiveError extends Error {
 }
 
 const registry = new Map<string, LiveSession>();
+
+export function listRunningSessionActivity(): SessionActivity[] {
+  return Array.from(registry.values())
+    .filter((live) => live.session.isStreaming)
+    .map((live) => ({ sessionId: live.sessionId, projectId: live.projectId, running: true }));
+}
+
+function publishActivity(live: LiveSession, running: boolean): void {
+  publishSessionActivity({ sessionId: live.sessionId, projectId: live.projectId, running });
+}
 
 /**
  * Built-in pi tools we activate on every session. Pi's SDK ships
@@ -484,6 +495,7 @@ function makeSubscribeHandler(live: LiveSession): () => void {
   return live.session.subscribe((event: AgentSessionEvent) => {
     live.lastActivityAt = new Date();
     if (event.type === "agent_start") {
+      publishActivity(live, true);
       // Capture BEFORE the SDK appends turn messages, so the index points
       // at the first message of the new turn (the user prompt or the
       // steered/follow-up entry).
@@ -603,6 +615,7 @@ function makeSubscribeHandler(live: LiveSession): () => void {
           }
         : undefined;
     if (e.type === "agent_end") {
+      publishActivity(live, false);
       // Primary: session-level `errorMessage` — the SDK's
       // documented authoritative field. Most failure modes set
       // this (auth failures, validation, etc.).
@@ -1372,6 +1385,7 @@ export async function disposeSession(sessionId: string): Promise<boolean> {
     // because we await it last.
     await processManager.disposeSession(sessionId).catch(() => undefined);
   } finally {
+    publishActivity(live, false);
     registry.delete(sessionId);
     // Tombstone the id so a polling SSE client can't re-resume the
     // session before deleteColdSession's file unlink runs. The

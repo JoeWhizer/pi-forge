@@ -3,6 +3,10 @@ import { api, ApiError, type SessionSummary, type UnifiedSession } from "../lib/
 import { streamSSE } from "../lib/sse-client";
 import { extractToolCallGeneration, type ToolCallGeneration } from "../lib/tool-call-streaming";
 import { createChatTimelinePosition, type ChatTimelinePosition } from "../lib/chat-timeline";
+
+type SessionActivityEvent =
+  | { type: "session_activity_snapshot"; running: { sessionId: string }[] }
+  | { type: "session_activity_changed"; sessionId: string; projectId: string; running: boolean };
 import { postCrossTab, subscribeCrossTab } from "../lib/cross-tab";
 import { useAskUserQuestionStore, type PendingAskQuestion } from "./ask-user-question-store";
 import { useTodoStore, type Task as TodoTaskShape } from "./todo-store";
@@ -68,6 +72,7 @@ const refetchState = new Map<string, RefetchState>();
  * through `set()`.
  */
 const controllers = new Map<string, AbortController>();
+let activityController: AbortController | undefined;
 
 /**
  * Phase 8 keeps the message type loose — pi's AgentMessage union is rich
@@ -362,6 +367,9 @@ interface SessionState {
   setActiveSession: (sessionId: string | undefined) => void;
   openStream: (sessionId: string) => void;
   closeStream: (sessionId: string) => void;
+  /** Opens the single global sidebar activity stream. */
+  openActivityStream: () => void;
+  closeActivityStream: () => void;
   /**
    * Force a one-shot messages refetch for a session, independent of
    * the SSE event loop. Used after operations that change the
@@ -462,6 +470,42 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         error: err instanceof ApiError ? err.code : (err as Error).message,
       });
     }
+  },
+
+  openActivityStream: () => {
+    if (activityController !== undefined) return;
+    const ctrl = new AbortController();
+    activityController = ctrl;
+    void streamSSE<SessionActivityEvent>("/api/v1/session-activity/stream", {
+      signal: ctrl.signal,
+      onEvent: (event) => {
+        if (event.type === "session_activity_snapshot") {
+          set((s) => {
+            const next: Record<string, boolean> = Object.fromEntries(
+              Object.keys(s.streamingBySession).map((id) => [id, false]),
+            );
+            for (const entry of event.running) next[entry.sessionId] = true;
+            return { streamingBySession: next };
+          });
+          return;
+        }
+        if (event.type === "session_activity_changed") {
+          set((s) => ({
+            streamingBySession: { ...s.streamingBySession, [event.sessionId]: event.running },
+          }));
+        }
+      },
+      onClose: () => {
+        if (activityController === ctrl) activityController = undefined;
+      },
+    }).catch(() => {
+      if (activityController === ctrl) activityController = undefined;
+    });
+  },
+
+  closeActivityStream: () => {
+    activityController?.abort();
+    activityController = undefined;
   },
 
   createSession: async (projectId) => {
