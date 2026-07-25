@@ -182,7 +182,7 @@ async function main(): Promise<void> {
             (event) =>
               event.type === "extension_ui_notification" &&
               event.message ===
-                "This extension requested an interactive dialog, which Pi Forge does not support.",
+                'Extension "test-command.js" requested an interactive confirm dialog ("Test dialog"), which Pi Forge does not support.',
             (event) =>
               event.type === "extension_ui_notification" &&
               event.message === "Command feedback: normal" &&

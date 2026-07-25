@@ -48,6 +48,11 @@ import { archiveSessionFiles } from "./session-archive.js";
 import { generateSessionTitleFromPrompt, isGenericSessionName } from "./session-title.js";
 import { getExternalSubagentStatusForSession } from "./subagents-external.js";
 import { readSandboxSettings } from "./sandbox-settings.js";
+import {
+  extensionNameFromStack,
+  formatUnsupportedExtensionDialog,
+  type UnsupportedExtensionDialog,
+} from "./extension-ui-attribution.js";
 
 /**
  * Minimal SSE client contract used by the registry to fan out events.
@@ -397,24 +402,31 @@ function emitExtensionUiNotification(
  * fail safely and explain their unsupported state to the user.
  */
 async function bindWebExtensionContext(live: LiveSession): Promise<void> {
-  const unsupportedDialog = (): void => {
+  const unsupportedDialog = (
+    method: UnsupportedExtensionDialog["method"],
+    title?: string,
+  ): void => {
     emitExtensionUiNotification(
       live,
-      "This extension requested an interactive dialog, which Pi Forge does not support.",
+      formatUnsupportedExtensionDialog({
+        extension: extensionNameFromStack(new Error().stack),
+        method,
+        title,
+      }),
       "warning",
     );
   };
   const uiContext = {
-    select: async () => {
-      unsupportedDialog();
+    select: async (title: string) => {
+      unsupportedDialog("select", title);
       return undefined;
     },
-    confirm: async () => {
-      unsupportedDialog();
+    confirm: async (title: string) => {
+      unsupportedDialog("confirm", title);
       return false;
     },
-    input: async () => {
-      unsupportedDialog();
+    input: async (title: string) => {
+      unsupportedDialog("input", title);
       return undefined;
     },
     notify: (message: string, level?: "info" | "warning" | "error") => {
@@ -431,14 +443,14 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
     setHeader: () => undefined,
     setTitle: () => undefined,
     custom: async <T>() => {
-      unsupportedDialog();
+      unsupportedDialog("custom");
       return undefined as T;
     },
     pasteToEditor: () => undefined,
     setEditorText: () => undefined,
     getEditorText: () => "",
-    editor: async () => {
-      unsupportedDialog();
+    editor: async (title: string) => {
+      unsupportedDialog("editor", title);
       return undefined;
     },
     addAutocompleteProvider: () => undefined,
