@@ -147,7 +147,7 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
 
   return (
     <aside
-      className={`flex h-full w-64 flex-col border-r border-neutral-800 bg-neutral-950 ${className}`}
+      className={`forge-project-sidebar flex h-full w-64 flex-col border-r border-neutral-800 bg-neutral-950 ${className}`}
       // Safe-area-aware top + bottom padding so the drawer chrome
       // (header, sessions list) doesn't slide under iPhone notches /
       // Android cutouts when the drawer is fullscreen-tall on
@@ -290,7 +290,7 @@ export function ProjectSidebar({ className = "" }: ProjectSidebarProps = {}) {
       {version.length > 0 && (
         <footer className="border-t border-neutral-800 px-2 py-2">
           <div
-            className="flex items-center justify-between gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 font-mono text-[10px] text-neutral-500"
+            className="forge-project-version flex items-center justify-between gap-2 rounded border border-neutral-800 bg-neutral-900/50 px-2 py-1 font-mono text-[10px] text-neutral-500"
             title={`Pi Forge build ${version}-${buildCommit || "unknown"} (${deploymentBranch})`}
           >
             <span>
