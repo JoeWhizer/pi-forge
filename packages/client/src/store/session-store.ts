@@ -6,7 +6,13 @@ import { createChatTimelinePosition, type ChatTimelinePosition } from "../lib/ch
 
 type SessionActivityEvent =
   | { type: "session_activity_snapshot"; running: { sessionId: string }[] }
-  | { type: "session_activity_changed"; sessionId: string; projectId: string; running: boolean };
+  | {
+      type: "session_activity_changed";
+      sessionId: string;
+      projectId: string;
+      running: boolean;
+      reason?: "completed" | "disposed";
+    };
 import { postCrossTab, subscribeCrossTab } from "../lib/cross-tab";
 import { useAskUserQuestionStore, type PendingAskQuestion } from "./ask-user-question-store";
 import { useTodoStore, type Task as TodoTaskShape } from "./todo-store";
@@ -207,6 +213,8 @@ function removeSessionFromState(current: SessionState, sessionId: string): Parti
   delete nextMessages[sessionId];
   const nextStreaming = { ...current.streamingBySession };
   delete nextStreaming[sessionId];
+  const nextUnreadResponse = { ...current.unreadResponseBySession };
+  delete nextUnreadResponse[sessionId];
   const nextBanner = { ...current.bannerBySession };
   delete nextBanner[sessionId];
   const nextExtensionNotifications = { ...current.extensionNotificationsBySession };
@@ -236,6 +244,7 @@ function removeSessionFromState(current: SessionState, sessionId: string): Parti
   return {
     messagesBySession: nextMessages,
     streamingBySession: nextStreaming,
+    unreadResponseBySession: nextUnreadResponse,
     bannerBySession: nextBanner,
     extensionNotificationsBySession: nextExtensionNotifications,
     streamingTextBySession: nextStreamingText,
@@ -279,6 +288,8 @@ interface SessionState {
   pendingDraftBySession: Record<string, string>;
   /** Per-session streaming state from snapshot/agent_start/agent_end. */
   streamingBySession: Record<string, boolean>;
+  /** Completed responses in chats that have not been selected since completion. */
+  unreadResponseBySession: Record<string, boolean>;
   /** Per-session last-known toolEvent + retry banners (lightly modelled). */
   bannerBySession: Record<string, string | undefined>;
   /**
@@ -440,6 +451,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   compactionsBySession: {},
   pendingDraftBySession: {},
   streamingBySession: {},
+  unreadResponseBySession: {},
   bannerBySession: {},
   extensionNotificationsBySession: {},
   streamingTextBySession: {},
@@ -492,6 +504,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (event.type === "session_activity_changed") {
           set((s) => ({
             streamingBySession: { ...s.streamingBySession, [event.sessionId]: event.running },
+            unreadResponseBySession:
+              event.reason === "completed" && event.sessionId !== s.activeSessionId
+                ? { ...s.unreadResponseBySession, [event.sessionId]: true }
+                : s.unreadResponseBySession,
           }));
         }
       },
@@ -633,7 +649,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setActiveSession: (sessionId) => {
     if (sessionId !== undefined) localStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
     else localStorage.removeItem(ACTIVE_SESSION_KEY);
-    set({ activeSessionId: sessionId });
+    set((s) => ({
+      activeSessionId: sessionId,
+      unreadResponseBySession:
+        sessionId === undefined
+          ? s.unreadResponseBySession
+          : { ...s.unreadResponseBySession, [sessionId]: false },
+    }));
   },
 
   openStream: (sessionId) => {
