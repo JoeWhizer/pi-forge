@@ -176,14 +176,16 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy from the builder: hoisted node_modules + all built workspaces.
-# npm workspaces hoists deps to the root /app/node_modules — there is
-# no per-package node_modules directory to copy. Bringing the package
-# manifests + built artifacts is enough; module resolution walks up
-# from packages/server/dist into /app/node_modules.
+# Copy root and server-workspace dependencies. npm may keep conflicting
+# workspace dependencies under packages/server/node_modules; Node resolves
+# those before walking up to /app/node_modules.
 COPY --from=builder --chown=pi:pi /app/node_modules ./node_modules
+COPY --from=builder --chown=pi:pi /app/packages/server/node_modules ./packages/server/node_modules
 RUN if [ -d /app/node_modules/@earendil-works/pi-coding-agent ]; then \
       chmod -R a+rX,u+w,go-w /app/node_modules/@earendil-works/pi-coding-agent; \
+    fi \
+ && if [ -d /app/packages/server/node_modules/@earendil-works/pi-coding-agent ]; then \
+      chmod -R a+rX,u+w,go-w /app/packages/server/node_modules/@earendil-works/pi-coding-agent; \
     fi
 COPY --from=builder --chown=pi:pi /app/package.json ./package.json
 COPY --from=builder --chown=pi:pi /app/packages/server/package.json ./packages/server/package.json
