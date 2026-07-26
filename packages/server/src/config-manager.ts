@@ -367,6 +367,17 @@ export async function liveModelRegistry(): Promise<ModelRegistry> {
   return new ModelRegistry(runtime);
 }
 
+/**
+ * Returns the active OAuth access token to server-only integrations. Callers
+ * must never serialize, log, or otherwise expose this credential.
+ */
+export async function readOAuthAccessToken(provider: string): Promise<string | undefined> {
+  const credential = (await readAuthJson())[provider];
+  return credential?.type === "oauth" && typeof credential.access === "string"
+    ? credential.access
+    : undefined;
+}
+
 export async function readAuthSummary(): Promise<AuthSummary> {
   const providers: Record<string, AuthEntry> = {};
   for (const [provider, credential] of Object.entries(await readAuthJson())) {

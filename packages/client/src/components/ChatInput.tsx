@@ -31,6 +31,7 @@ import { isChatSubmitShortcut } from "../lib/chat-input-keys";
 import { parseSkillInvocation } from "../lib/skill-command";
 import { ProcessesPopover, TodosPopover } from "./InputPopovers";
 import { ComposerContextStatus } from "./ComposerContextStatus";
+import { CodexContextStatus } from "./CodexContextStatus";
 
 /**
  * Pull the user's prior prompts out of the session message history,
@@ -1998,7 +1999,13 @@ export function ChatInput({ sessionId }: Props) {
             </div>
           )}
         </div>
-        <ComposerContextStatus sessionId={sessionId} />
+        <div className="flex flex-wrap items-center gap-2">
+          <ComposerContextStatus sessionId={sessionId} />
+          <CodexContextStatus
+            sessionId={sessionId}
+            enabled={activeSessionModel?.provider === "openai-codex"}
+          />
+        </div>
         {error !== undefined && <p className="text-xs text-red-400">Error: {error}</p>}
         {attachmentError !== undefined && (
           <p className="text-xs text-amber-400">{attachmentError}</p>

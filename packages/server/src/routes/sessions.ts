@@ -23,6 +23,7 @@ import {
 import { errorSchema, liveSummaryBody, liveSummarySchema } from "./_schemas.js";
 import { buildTurnDiff } from "../turn-diff-builder.js";
 import { buildCompactionHistory } from "../compaction-history.js";
+import { getCodexUsageSnapshot } from "../codex-usage.js";
 import {
   getExternalSubagentStatusForSession,
   readSessionMessagesFromDisk,
@@ -890,6 +891,26 @@ export const sessionRoutes: FastifyPluginAsync = async (fastify) => {
       };
     },
   );
+
+  // Codex subscription limits are only available while the active model is
+  // authenticated through openai-codex. All other cases intentionally return
+  // an empty response so the composer renders neither a placeholder nor error.
+  fastify.get<{ Params: { id: string } }>("/sessions/:id/codex-usage", async (req, reply) => {
+    let live = getSession(req.params.id);
+    if (live === undefined) {
+      try {
+        live = await resumeSessionById(req.params.id);
+      } catch {
+        return notFound(reply);
+      }
+    }
+    if (await rejectExternalIfNeeded(req.params.id, live.projectId, live.workspacePath, reply)) {
+      return reply;
+    }
+    if (live.session.model?.provider !== "openai-codex") return {};
+    const usage = await getCodexUsageSnapshot();
+    return usage === undefined ? {} : usage;
+  });
 
   fastify.post<{ Params: { id: string }; Body: { name: string } }>(
     "/sessions/:id/name",

@@ -839,6 +839,17 @@ export interface SessionContextResponse {
   contextUsage: ContextUsageStats;
 }
 
+export interface CodexUsageWindow {
+  label: string;
+  usedPercent: number;
+  resetAt?: string;
+}
+
+export interface CodexUsageResponse {
+  plan?: string;
+  windows?: CodexUsageWindow[];
+}
+
 export interface SessionTreeResponse {
   /** Current leaf id of the session — the active branch tip. */
   leafId: string | null;
