@@ -30,6 +30,7 @@ import { extractClipboardImageFiles } from "../lib/clipboard-images";
 import { isChatSubmitShortcut } from "../lib/chat-input-keys";
 import { parseSkillInvocation } from "../lib/skill-command";
 import { ProcessesPopover, TodosPopover } from "./InputPopovers";
+import { CodexContextStatus } from "./CodexContextStatus";
 
 /**
  * Pull the user's prior prompts out of the session message history,
@@ -1435,6 +1436,9 @@ export function ChatInput({ sessionId }: Props) {
           attachments.length > 0 ? attachments : undefined,
           !isExtensionCommandInvocation,
         );
+        window.dispatchEvent(
+          new CustomEvent<string>("forge:prompt-dispatched", { detail: sessionId }),
+        );
       }
       setText("");
       clearAttachments();
@@ -1994,6 +1998,10 @@ export function ChatInput({ sessionId }: Props) {
             </div>
           )}
         </div>
+        <CodexContextStatus
+          sessionId={sessionId}
+          enabled={activeSessionModel?.provider === "openai-codex"}
+        />
         {error !== undefined && <p className="text-xs text-red-400">Error: {error}</p>}
         {attachmentError !== undefined && (
           <p className="text-xs text-amber-400">{attachmentError}</p>

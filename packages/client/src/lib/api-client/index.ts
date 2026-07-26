@@ -66,6 +66,7 @@ import {
   type ContextTurn,
   type ContextUsageStats,
   type SessionContextResponse,
+  type CodexUsageResponse,
   type SessionTreeResponse,
   type UploadedFile,
   type UploadResponse,
@@ -1250,6 +1251,32 @@ function vGitBranches(value: unknown, status: number): GitBranchesResponse {
   return out;
 }
 
+function vCodexUsage(value: unknown, status: number): CodexUsageResponse {
+  if (!isObject(value)) fail(status, "expected CodexUsageResponse");
+  const out: CodexUsageResponse = {};
+  if (typeof value.plan === "string") out.plan = value.plan;
+  if (Array.isArray(value.windows)) {
+    out.windows = value.windows.flatMap((window) => {
+      if (
+        !isObject(window) ||
+        typeof window.label !== "string" ||
+        typeof window.usedPercent !== "number"
+      ) {
+        return [];
+      }
+      if (!Number.isFinite(window.usedPercent)) return [];
+      return [
+        {
+          label: window.label,
+          usedPercent: Math.max(0, Math.min(100, window.usedPercent)),
+          ...(typeof window.resetAt === "string" ? { resetAt: window.resetAt } : {}),
+        },
+      ];
+    });
+  }
+  return out;
+}
+
 function vSessionContext(value: unknown, status: number): SessionContextResponse {
   if (
     !isObject(value) ||
@@ -1857,6 +1884,12 @@ export const api = {
     request(
       `/api/v1/sessions/${encodeURIComponent(id)}/context`,
       vSessionContext,
+      signal !== undefined ? { signal } : {},
+    ),
+  getCodexUsage: (id: string, signal?: AbortSignal) =>
+    request(
+      `/api/v1/sessions/${encodeURIComponent(id)}/codex-usage`,
+      vCodexUsage,
       signal !== undefined ? { signal } : {},
     ),
   getSessionTree: (id: string) =>
