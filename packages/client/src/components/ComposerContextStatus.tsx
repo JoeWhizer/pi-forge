@@ -91,8 +91,9 @@ export function ComposerContextStatus({ sessionId }: Props) {
   useEffect(() => {
     setData(undefined);
     previousToolRef.current = undefined;
+    refresh();
     return () => requestRef.current?.abort();
-  }, [sessionId]);
+  }, [refresh, sessionId]);
 
   if (data === undefined) return null;
 
