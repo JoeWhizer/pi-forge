@@ -2436,11 +2436,19 @@ function ModelPicker({
   useEffect(() => {
     if (open) {
       setQuery("");
-      setActiveIdx(0);
+      // Match the initial keyboard focus and palette highlight to the
+      // session's active override, just like the thinking-level picker.
+      // The default row uses index -1.
+      if (value === "") {
+        setActiveIdx(-1);
+      } else {
+        const selectedIndex = options.findIndex((option) => option.value === value);
+        setActiveIdx(selectedIndex >= 0 ? selectedIndex : 0);
+      }
       // Focus the input after the dropdown mounts.
       requestAnimationFrame(() => inputRef.current?.focus());
     }
-  }, [open]);
+  }, [open, options, value]);
 
   // Keep the active option scrolled into view.
   useEffect(() => {
