@@ -11,7 +11,13 @@ function resetLabel(resetAt: string | undefined): string | undefined {
   const date = new Date(resetAt);
   return Number.isNaN(date.valueOf())
     ? undefined
-    : `resets ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    : `resets ${date.toLocaleString([], {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`;
 }
 
 /** Renders nothing unless a fresh, authenticated Codex usage snapshot exists. */
