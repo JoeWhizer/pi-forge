@@ -103,20 +103,20 @@ export function ComposerContextStatus({ sessionId }: Props) {
   const toolCalls = countToolCalls(data.messages);
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-y border-neutral-800/80 py-1 text-[10px] text-neutral-400 light:border-neutral-200 light:text-neutral-600">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 py-1 text-[10px] text-neutral-400 light:text-neutral-600">
       <span className="max-w-full truncate" title={`Session: ${sessionLabel}`}>
-        Session: {sessionLabel}
+        <strong>Session:</strong> {sessionLabel}
       </span>
       <span title="Cumulative input, output, and cost for this session">
-        Tokens: {formatTokens(data.totalInputTokens)} in / {formatTokens(data.totalOutputTokens)}{" "}
-        out · {formatCost(data.totalCost)}
+        <strong>Tokens:</strong> {formatTokens(data.totalInputTokens)} in /{" "}
+        {formatTokens(data.totalOutputTokens)} out · {formatCost(data.totalCost)}
       </span>
       <span title="Prompt-cache reads compared with new input tokens">
-        Cache: {cacheHit.toFixed(0)}% Hit · {formatTokens(data.totalCacheReadTokens)} cached ·{" "}
-        {formatTokens(data.totalInputTokens)} new
+        <strong>Cache:</strong> {cacheHit.toFixed(0)}% Hit ·{" "}
+        {formatTokens(data.totalCacheReadTokens)} cached · {formatTokens(data.totalInputTokens)} new
       </span>
       <span title="Completed assistant turns and recorded tool calls">
-        Amount turns: {data.turns.length} · {toolCalls} tools used
+        <strong>Amount turns:</strong> {data.turns.length} · {toolCalls} tools used
       </span>
     </div>
   );
