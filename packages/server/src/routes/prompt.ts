@@ -369,8 +369,8 @@ async function validateModelForPrompt(live: LiveSession, reply: FastifyReply): P
     });
     return false;
   }
-  await live.session.modelRuntime.reloadConfig();
   await syncStoredApiKeyToRuntime(live.session.modelRuntime, model.provider);
+  await live.session.modelRuntime.refresh();
   if (!live.session.modelRuntime.hasConfiguredAuth(model.provider)) {
     await reply.code(400).send({
       error: "no_api_key",

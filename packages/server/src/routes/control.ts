@@ -559,11 +559,8 @@ export const controlRoutes: FastifyPluginAsync = async (fastify) => {
           // undefined so we don't try to restore a phantom snapshot.
         }
         try {
-          // The live AgentSession was created with a ModelRuntime snapshot of
-          // auth.json + models.json at session-create time; refresh it before
-          // calling setModel so providers, models, and credentials added after
-          // session creation are visible without restarting the session.
-          await live.session.modelRuntime.reloadConfig();
+          // ModelRuntime 0.82 refreshes provider availability itself. Sync the
+          // stored key into the live runtime before refreshing and selecting.
           await syncStoredApiKeyToRuntime(live.session.modelRuntime, req.body.provider);
           await live.session.modelRuntime.refresh();
           // Wrap in withTimeout so a hung SDK setModel can't hold the
