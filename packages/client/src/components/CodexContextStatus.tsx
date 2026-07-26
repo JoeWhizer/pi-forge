@@ -4,7 +4,6 @@ import { useSessionStore } from "../store/session-store";
 
 interface Props {
   sessionId: string;
-  enabled: boolean;
 }
 
 function resetLabel(resetAt: string | undefined): string | undefined {
@@ -16,7 +15,7 @@ function resetLabel(resetAt: string | undefined): string | undefined {
 }
 
 /** Renders nothing unless a fresh, authenticated Codex usage snapshot exists. */
-export function CodexContextStatus({ sessionId, enabled }: Props) {
+export function CodexContextStatus({ sessionId }: Props) {
   const activeTool = useSessionStore((s) => s.activeToolBySession[sessionId]);
   const [usage, setUsage] = useState<CodexUsageResponse | undefined>(undefined);
   const requestRef = useRef<AbortController | undefined>(undefined);
@@ -24,10 +23,6 @@ export function CodexContextStatus({ sessionId, enabled }: Props) {
   const refreshRef = useRef<() => void>(() => undefined);
 
   const refresh = useCallback(() => {
-    if (!enabled) {
-      setUsage(undefined);
-      return;
-    }
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -39,7 +34,7 @@ export function CodexContextStatus({ sessionId, enabled }: Props) {
       .catch(() => {
         if (!controller.signal.aborted) setUsage(undefined);
       });
-  }, [enabled, sessionId]);
+  }, [sessionId]);
   refreshRef.current = refresh;
 
   useEffect(() => {
@@ -61,11 +56,11 @@ export function CodexContextStatus({ sessionId, enabled }: Props) {
     previousToolRef.current = undefined;
     refresh();
     return () => requestRef.current?.abort();
-  }, [enabled, refresh, sessionId]);
+  }, [refresh, sessionId]);
 
   const windows = usage?.windows;
   const plan = usage?.plan;
-  if (!enabled || windows === undefined || windows.length === 0) return null;
+  if (windows === undefined || windows.length === 0) return null;
   return (
     <div className="ml-auto flex min-w-0 flex-wrap justify-end gap-x-2 text-[10px] text-sky-300 light:text-sky-700">
       <span>Codex{plan === undefined ? "" : ` ${plan}`}</span>

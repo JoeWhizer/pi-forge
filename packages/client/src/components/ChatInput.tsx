@@ -1805,6 +1805,9 @@ export function ChatInput({ sessionId }: Props) {
       <div className="px-3 pt-2 xl:absolute xl:bottom-3 xl:right-[calc(50%+24rem+0.75rem)] xl:w-[min(18rem,calc(50%-25rem))] xl:px-0 xl:pt-0">
         <ComposerContextStatus sessionId={sessionId} />
       </div>
+      <div className="px-3 xl:absolute xl:bottom-3 xl:left-[calc(50%+24rem+0.75rem)] xl:w-[min(18rem,calc(50%-25rem))] xl:px-0">
+        <CodexContextStatus sessionId={sessionId} />
+      </div>
       {/*
         Drag handle that lives where the composer's top border used to
         be. Plain visual: a 1-px hairline matching the rest of the
@@ -2001,12 +2004,6 @@ export function ChatInput({ sessionId }: Props) {
               )}
             </div>
           )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <CodexContextStatus
-            sessionId={sessionId}
-            enabled={activeSessionModel?.provider === "openai-codex"}
-          />
         </div>
         {error !== undefined && <p className="text-xs text-red-400">Error: {error}</p>}
         {attachmentError !== undefined && (
