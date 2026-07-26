@@ -2509,9 +2509,10 @@ function ModelPicker({
           <div ref={listRef} className="max-h-72 overflow-y-auto py-1">
             <button
               data-idx={-1}
+              data-forge-palette-active={activeIdx === -1 ? "true" : "false"}
               onMouseEnter={() => setActiveIdx(-1)}
               onClick={() => commit(-1)}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
+              className={`forge-palette-item flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
                 activeIdx === -1 ? "bg-neutral-800 text-neutral-100" : "text-neutral-400"
               }`}
             >
@@ -2534,9 +2535,10 @@ function ModelPicker({
                 <button
                   key={opt.value}
                   data-idx={i}
+                  data-forge-palette-active={i === activeIdx ? "true" : "false"}
                   onMouseEnter={() => setActiveIdx(i)}
                   onClick={() => commit(i)}
-                  className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
+                  className={`forge-palette-item flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
                     i === activeIdx ? "bg-neutral-800 text-neutral-100" : "text-neutral-300"
                   }`}
                 >
@@ -2607,11 +2609,12 @@ function ThinkingLevelPicker({
           {options.map((level) => (
             <button
               key={level}
+              data-forge-palette-active={level === value ? "true" : "false"}
               onClick={() => {
                 onChange(level);
                 setOpen(false);
               }}
-              className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
+              className={`forge-palette-item flex w-full items-center justify-between px-3 py-1.5 text-left text-xs ${
                 level === value ? "bg-neutral-800 text-neutral-100" : "text-neutral-300"
               }`}
             >
