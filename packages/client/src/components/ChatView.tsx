@@ -1431,6 +1431,16 @@ function Message({
   if (message.role === "custom" && message.customType === "orchestration-notify") {
     return <LifecycleStatusCard message={message} kind="worker" />;
   }
+  if (message.role === "custom" && message.customType === "subagent_watchdog_warning") {
+    return <WatchdogWarningCard message={message} />;
+  }
+  if (
+    message.role === "custom" &&
+    message.customType === "subagent-slash-text-result" &&
+    stringifyCustomContent(message.content).startsWith("Subagent watchdog")
+  ) {
+    return <WatchdogCommandCard message={message} />;
+  }
 
   // Bash execution messages — surface via either the SDK's native
   // `role: "bashExecution"` BashExecutionMessage (the `!` chat input
@@ -1544,6 +1554,60 @@ function stringifyCustomContent(content: unknown): string {
     })
     .filter((text) => text.length > 0)
     .join("\n");
+}
+
+function WatchdogCommandCard({ message }: { message: AgentMessageLike }) {
+  const content = stringifyCustomContent(message.content);
+  return (
+    <details className="rounded-lg border border-sky-800/60 bg-sky-950/20 px-3 py-2 text-xs light:border-sky-300 light:bg-sky-50">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sky-100 light:text-sky-900 [&::-webkit-details-marker]:hidden">
+        <Check size={14} className="text-sky-300 light:text-sky-700" />
+        <span className="font-medium">Subagent watchdog</span>
+        <span className="ml-auto text-[10px] uppercase tracking-wide text-sky-300/80 light:text-sky-700">
+          status / configuration
+        </span>
+      </summary>
+      <pre className="mt-2 overflow-auto whitespace-pre-wrap text-[11px] text-neutral-300 light:text-neutral-700">
+        {content}
+      </pre>
+    </details>
+  );
+}
+
+function WatchdogWarningCard({ message }: { message: AgentMessageLike }) {
+  const details =
+    typeof message.details === "object" && message.details !== null
+      ? (message.details as Record<string, unknown>)
+      : {};
+  const blocker = details.severity === "blocker";
+  const summary =
+    typeof details.summary === "string" ? details.summary : stringifyCustomContent(message.content);
+  const evidence = typeof details.evidence === "string" ? details.evidence : undefined;
+  const action =
+    typeof details.recommendedAction === "string" ? details.recommendedAction : undefined;
+  const style = blocker
+    ? "border-red-700/70 bg-red-950/25 light:border-red-300 light:bg-red-50"
+    : "border-amber-700/70 bg-amber-950/25 light:border-amber-300 light:bg-amber-50";
+  const tone = blocker ? "text-red-200 light:text-red-900" : "text-amber-200 light:text-amber-900";
+  return (
+    <details open className={`rounded-lg border px-3 py-2 text-xs ${style}`}>
+      <summary
+        className={`flex cursor-pointer list-none items-center gap-2 ${tone} [&::-webkit-details-marker]:hidden`}
+      >
+        <X size={14} />
+        <span className="font-medium">
+          Subagent watchdog {blocker ? "blocker" : "intervention"}
+        </span>
+      </summary>
+      <p className={`mt-2 font-medium ${tone}`}>{summary}</p>
+      {evidence !== undefined && (
+        <p className="mt-1 text-neutral-300 light:text-neutral-700">Evidence: {evidence}</p>
+      )}
+      {action !== undefined && (
+        <p className="mt-1 text-neutral-300 light:text-neutral-700">Recommended action: {action}</p>
+      )}
+    </details>
+  );
 }
 
 function shouldSuppressCodexProviderError(
