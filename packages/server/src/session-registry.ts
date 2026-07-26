@@ -284,9 +284,14 @@ async function buildToolsAllowlist(
   // contributed tool. See packages/server/src/extensions-discovery.ts
   // for the discovery contract.
   const extensionResources = await discoverExtensionResources(workspacePath);
+  // pi-subagents registers this parent-only tool during session_start,
+  // after this allowlist is calculated. Keep it available so a parent model
+  // can resolve an incoming native supervisor request.
+  const dynamicExtensionToolNames = ["subagent_supervisor"];
   const forgeNativeCustomToolNames = new Set<string>([
     ...BUILTIN_TOOL_NAMES,
     ...ORCHESTRATION_TOOL_NAMES,
+    ...dynamicExtensionToolNames,
   ]);
   const candidates = [
     ...BUILTIN_TOOL_NAMES.map((name) => ({ family: "builtin" as const, name })),
@@ -295,6 +300,7 @@ async function buildToolsAllowlist(
       name: t.name,
     })),
     ...extensionResources.tools.map((t) => ({ family: "extension" as const, name: t.name })),
+    ...dynamicExtensionToolNames.map((name) => ({ family: "extension" as const, name })),
   ];
   return filterEnabledTools(overrides, projectId, candidates);
 }
