@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { FileCode, FolderTree, Menu, MessageSquare, Terminal as TerminalIcon } from "lucide-react";
+import {
+  FileCode,
+  FolderTree,
+  Menu,
+  MessageSquare,
+  PanelLeft,
+  Terminal as TerminalIcon,
+} from "lucide-react";
 import { useIsMobile } from "./lib/use-is-mobile";
 import { useAuthStore } from "./store/auth-store";
 import { useActiveProject, useProjectStore } from "./store/project-store";
@@ -40,14 +47,18 @@ type RightPaneTab = "files" | "search" | "changes" | "git" | "context" | "proces
 /* Persisted pane widths. Stored in localStorage so the user-tuned
    layout survives reloads. Defaults err on the side of "the chat is the
    primary surface" — files is narrow, editor is medium. */
+const PROJECTS_OPEN_KEY = "pi-forge/projects-open";
+const PROJECTS_WIDTH_KEY = "pi-forge/projects-width";
 const FILES_WIDTH_KEY = "pi-forge/files-width";
 const EDITOR_WIDTH_KEY = "pi-forge/editor-width";
 const TERMINAL_HEIGHT_KEY = "pi-forge/terminal-height";
 const TODO_PANEL_HEIGHT_KEY = "pi-forge/todo-panel-height";
+const DEFAULT_PROJECTS_WIDTH = 256;
 const DEFAULT_FILES_WIDTH = 280;
 const DEFAULT_EDITOR_WIDTH = 480;
 const DEFAULT_TERMINAL_HEIGHT = 280;
 const DEFAULT_TODO_PANEL_HEIGHT = 200;
+const MIN_PROJECTS_WIDTH = 200;
 const MIN_FILES_WIDTH = 200;
 const MIN_EDITOR_WIDTH = 320;
 const MIN_CHAT_WIDTH = 320;
@@ -90,6 +101,16 @@ export function App() {
      flip / "Request Desktop Site" all transition cleanly. */
   const isMobile = useIsMobile();
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // The desktop Projects pane follows the same persistence model as the
+  // other layout panes. Mobile keeps its dedicated drawer interaction.
+  const [projectsOpen, setProjectsOpen] = useState<boolean>(
+    () => localStorage.getItem(PROJECTS_OPEN_KEY) !== "false",
+  );
+  const setProjectsOpenPersisted = (v: boolean): void => {
+    setProjectsOpen(v);
+    localStorage.setItem(PROJECTS_OPEN_KEY, v ? "true" : "false");
+  };
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Files pane visibility persists across reloads — opening it once is
@@ -218,14 +239,25 @@ export function App() {
   // the live value in state so drags re-render the layout, and mirror
   // it through the ref so the divider can read the start width without
   // a stale-closure bug across drags.
+  const [projectsWidth, setProjectsWidth] = useState<number>(() =>
+    Math.max(
+      MIN_PROJECTS_WIDTH,
+      readPersistedWidth(PROJECTS_WIDTH_KEY, DEFAULT_PROJECTS_WIDTH),
+    ),
+  );
   const [filesWidth, setFilesWidth] = useState<number>(() =>
     readPersistedWidth(FILES_WIDTH_KEY, DEFAULT_FILES_WIDTH),
   );
   const [editorWidth, setEditorWidth] = useState<number>(() =>
     readPersistedWidth(EDITOR_WIDTH_KEY, DEFAULT_EDITOR_WIDTH),
   );
+  const projectsWidthRef = useRef(projectsWidth);
   const filesWidthRef = useRef(filesWidth);
   const editorWidthRef = useRef(editorWidth);
+  useEffect(() => {
+    projectsWidthRef.current = projectsWidth;
+    localStorage.setItem(PROJECTS_WIDTH_KEY, String(projectsWidth));
+  }, [projectsWidth]);
   useEffect(() => {
     filesWidthRef.current = filesWidth;
     localStorage.setItem(FILES_WIDTH_KEY, String(filesWidth));
@@ -464,6 +496,19 @@ export function App() {
               pre-mobile-PR behavior. */}
           <div className="hidden md:contents">
             <button
+              onClick={() => setProjectsOpenPersisted(!projectsOpen)}
+              aria-pressed={projectsOpen}
+              className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
+                projectsOpen
+                  ? "border-neutral-500 bg-neutral-800 text-neutral-100"
+                  : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
+              }`}
+              title="Toggle the projects pane"
+            >
+              <PanelLeft size={13} />
+              Projects
+            </button>
+            <button
               onClick={() => setChatOpenPersisted(!chatOpen)}
               className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
                 chatOpen
@@ -602,29 +647,50 @@ export function App() {
               }}
             />
           )}
-          <ProjectSidebar
-            className={
-              // The drawer-slide translate is scoped with `max-md:` so
-              // it ONLY applies on mobile. Earlier this was an
-              // unscoped `translate-x-0` / `-translate-x-full` plus
-              // `md:transform-none` on top, but `transform-none` does
-              // not beat translate utilities in Tailwind's CSS source
-              // order: the translate's emitted `transform: translateX(
-              // ...)` won at md+, which (a) created a CSS containing
-              // block on the sidebar — squishing every `fixed inset-0`
-              // modal rendered inside it (ProjectPicker, project-delete,
-              // session bulk-delete) into the sidebar's bounding box —
-              // and (b) when we tried clearing it via removing the
-              // `md:translate-x-0` counter, the closed-drawer base
-              // `-translate-x-full` shoved the desktop sidebar off-
-              // screen. `max-md:` on both conditional translates
-              // emits no transform at md+ at all, so neither pathology
-              // triggers and the sidebar lays out in its natural flow.
-              "fixed inset-y-0 left-0 z-40 shadow-2xl transition-transform duration-200 ease-out " +
-              "md:static md:inset-auto md:z-auto md:shadow-none md:transition-none " +
-              (drawerOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full")
-            }
-          />
+          {(isMobile || projectsOpen) && (
+            <>
+              <ProjectSidebar
+                className={
+                  // The drawer-slide translate is scoped with `max-md:` so
+                  // it ONLY applies on mobile. Earlier this was an
+                  // unscoped `translate-x-0` / `-translate-x-full` plus
+                  // `md:transform-none` on top, but `transform-none` does
+                  // not beat translate utilities in Tailwind's CSS source
+                  // order: the translate's emitted `transform: translateX(
+                  // ...)` won at md+, which (a) created a CSS containing
+                  // block on the sidebar — squishing every `fixed inset-0`
+                  // modal rendered inside it (ProjectPicker, project-delete,
+                  // session bulk-delete) into the sidebar's bounding box —
+                  // and (b) when we tried clearing it via removing the
+                  // `md:translate-x-0` counter, the closed-drawer base
+                  // `-translate-x-full` shoved the desktop sidebar off-
+                  // screen. `max-md:` on both conditional translates
+                  // emits no transform at md+ at all, so neither pathology
+                  // triggers and the sidebar lays out in its natural flow.
+                  "fixed inset-y-0 left-0 z-40 shadow-2xl transition-transform duration-200 ease-out " +
+                  "md:static md:inset-auto md:z-auto md:shadow-none md:transition-none " +
+                  (drawerOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full")
+                }
+                {...(isMobile ? {} : { style: { width: `${projectsWidth}px` } })}
+              />
+              {!isMobile && (
+                <ResizableDivider
+                  getStartSize={() => projectsWidthRef.current}
+                  onResize={(next) => setProjectsWidth(next)}
+                  direction={1}
+                  minSize={MIN_PROJECTS_WIDTH}
+                  maxSize={Math.max(
+                    MIN_PROJECTS_WIDTH,
+                    window.innerWidth -
+                      MIN_CHAT_WIDTH -
+                      (filesOpen ? filesWidth + 4 : 0) -
+                      (editorVisible ? editorWidth + 4 : 0) -
+                      4,
+                  )}
+                />
+              )}
+            </>
+          )}
           <main className="flex flex-1 overflow-hidden">
             {/* Layout when files pane is open:
                   chat (flex) | divider | editor (when ≥1 tab) | divider | files
@@ -746,7 +812,11 @@ export function App() {
                       minSize={MIN_EDITOR_WIDTH}
                       maxSize={Math.max(
                         MIN_EDITOR_WIDTH,
-                        window.innerWidth - (filesOpen ? filesWidth : 0) - MIN_CHAT_WIDTH - 240, // 240 ≈ ProjectSidebar
+                        window.innerWidth -
+                          (filesOpen ? filesWidth + 4 : 0) -
+                          MIN_CHAT_WIDTH -
+                          (projectsOpen ? projectsWidth + 4 : 0) -
+                          4,
                       )}
                     />
                     <div
@@ -891,8 +961,9 @@ export function App() {
                         MIN_FILES_WIDTH,
                         window.innerWidth -
                           MIN_CHAT_WIDTH -
-                          240 -
-                          (editorVisible ? MIN_EDITOR_WIDTH : 0),
+                          (projectsOpen ? projectsWidth + 4 : 0) -
+                          (editorVisible ? MIN_EDITOR_WIDTH + 4 : 0) -
+                          4,
                       )}
                     />
                     <div
