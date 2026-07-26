@@ -59,8 +59,9 @@ export function CodexContextStatus({ sessionId, enabled }: Props) {
   useEffect(() => {
     setUsage(undefined);
     previousToolRef.current = undefined;
+    refresh();
     return () => requestRef.current?.abort();
-  }, [enabled, sessionId]);
+  }, [enabled, refresh, sessionId]);
 
   const windows = usage?.windows;
   const plan = usage?.plan;
