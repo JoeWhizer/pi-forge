@@ -843,7 +843,7 @@ export function App() {
                     {/* Right-pane tabs: file browser vs the turn-diff
                         "Changes" view. Both share width + position so
                         they don't compete for screen real estate. */}
-                    <div className="forge-right-pane-tabs flex border-b border-neutral-800 bg-neutral-900/40">
+                    <div className="forge-right-pane-tabs flex min-w-0 overflow-x-auto overflow-y-hidden border-b border-neutral-800 bg-neutral-900/40">
                       {(minimal
                         ? // Minimal mode keeps Files + Search + Context.
                           // Context (token usage / message inspector) is
@@ -860,7 +860,7 @@ export function App() {
                         <button
                           key={t}
                           onClick={() => setRightTabPersisted(t)}
-                          className={`flex items-center gap-1 px-3 py-1.5 text-[11px] uppercase tracking-wider ${
+                          className={`shrink-0 flex items-center gap-1 px-3 py-1.5 text-[11px] uppercase tracking-wider ${
                             rightTab === t
                               ? "border-b border-neutral-100 text-neutral-100"
                               : "text-neutral-500 hover:text-neutral-300"
