@@ -1801,7 +1801,10 @@ export function ChatInput({ sessionId }: Props) {
   }, [text, isMobile, textareaHeight]);
 
   return (
-    <div className="forge-chat-input-root bg-neutral-950">
+    <div className="forge-chat-input-root relative bg-neutral-950">
+      <div className="px-3 pt-2 xl:absolute xl:bottom-3 xl:right-[calc(50%+24rem+0.75rem)] xl:w-[min(18rem,calc(50%-25rem))] xl:px-0 xl:pt-0">
+        <ComposerContextStatus sessionId={sessionId} />
+      </div>
       {/*
         Drag handle that lives where the composer's top border used to
         be. Plain visual: a 1-px hairline matching the rest of the
@@ -2000,7 +2003,6 @@ export function ChatInput({ sessionId }: Props) {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ComposerContextStatus sessionId={sessionId} />
           <CodexContextStatus
             sessionId={sessionId}
             enabled={activeSessionModel?.provider === "openai-codex"}
