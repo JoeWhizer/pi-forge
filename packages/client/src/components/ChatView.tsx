@@ -1431,6 +1431,9 @@ function Message({
   if (message.role === "custom" && message.customType === "orchestration-notify") {
     return <LifecycleStatusCard message={message} kind="worker" />;
   }
+  if (message.role === "custom" && message.customType === "subagent_supervisor_request") {
+    return <SupervisorRequestCard message={message} />;
+  }
   if (message.role === "custom" && message.customType === "subagent_watchdog_warning") {
     return <WatchdogWarningCard message={message} />;
   }
@@ -1522,6 +1525,93 @@ function LifecycleStatusCard({
       <pre className="mt-2 overflow-auto rounded bg-neutral-950/70 p-2 text-[10px] text-neutral-500 light:bg-white/70 light:text-neutral-600">
         {JSON.stringify(details, null, 2)}
       </pre>
+    </details>
+  );
+}
+
+function SupervisorRequestCard({ message }: { message: AgentMessageLike }) {
+  const details =
+    typeof message.details === "object" && message.details !== null
+      ? (message.details as Record<string, unknown>)
+      : {};
+  const requestId = typeof details.id === "string" ? details.id : "unknown";
+  const reason = typeof details.reason === "string" ? details.reason.replace(/_/g, " ") : "request";
+  const agent = typeof details.agent === "string" ? details.agent : "subagent";
+  const runId = typeof details.runId === "string" ? details.runId : "unknown";
+  const content = stringifyCustomContent(message.content);
+
+  return (
+    <details
+      open
+      className="rounded-lg border border-red-800/60 bg-red-950/25 px-3 py-2 text-xs light:border-red-300 light:bg-red-50"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-red-100 light:text-red-900 [&::-webkit-details-marker]:hidden">
+        <X size={14} className="text-red-300 light:text-red-700" />
+        <span className="font-medium">Supervisor request: {agent}</span>
+        <span className="ml-auto rounded bg-red-950/70 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-red-200 light:bg-red-100 light:text-red-800">
+          pending
+        </span>
+      </summary>
+      {content.length > 0 && (
+        <pre className="mt-2 whitespace-pre-wrap text-neutral-200 light:text-neutral-800">
+          {content}
+        </pre>
+      )}
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-red-200/80 light:text-red-800/80">
+        <span>request: {requestId}</span>
+        <span>reason: {reason}</span>
+        <span>run: {runId}</span>
+      </div>
+    </details>
+  );
+}
+
+function SupervisorReplyCard({
+  requestId,
+  message,
+  isError,
+  text,
+}: {
+  requestId: string;
+  message: string;
+  isError: boolean;
+  text: string;
+}) {
+  const rejected =
+    isError || /\b(rejected|reject|denied|declined|abgelehnt|verweigert)\b/i.test(message);
+  const approved =
+    !rejected &&
+    /\b(approved|approve|accepted|proceed|continue|genehmigt|freigegeben)\b/i.test(message);
+  const style = rejected
+    ? "border-red-800/60 bg-red-950/25 light:border-red-300 light:bg-red-50"
+    : approved
+      ? "border-emerald-800/60 bg-emerald-950/25 light:border-emerald-300 light:bg-emerald-50"
+      : "border-sky-800/60 bg-sky-950/20 light:border-sky-300 light:bg-sky-50";
+  const tone = rejected
+    ? "text-red-200 light:text-red-900"
+    : approved
+      ? "text-emerald-200 light:text-emerald-900"
+      : "text-sky-200 light:text-sky-900";
+  const label = rejected ? "rejected" : approved ? "approved" : "replied";
+
+  return (
+    <details open className={`rounded-lg border px-3 py-2 text-xs ${style}`}>
+      <summary
+        className={`flex cursor-pointer list-none items-center gap-2 ${tone} [&::-webkit-details-marker]:hidden`}
+      >
+        {rejected ? <X size={14} /> : <Check size={14} />}
+        <span className="font-medium">Supervisor reply</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wide">{label}</span>
+      </summary>
+      {message.length > 0 && (
+        <p className="mt-2 whitespace-pre-wrap text-neutral-200 light:text-neutral-800">
+          {message}
+        </p>
+      )}
+      {text.length > 0 && text !== message && (
+        <pre className="mt-2 whitespace-pre-wrap text-neutral-400">{text}</pre>
+      )}
+      <div className="mt-2 font-mono text-[10px] text-neutral-400">request: {requestId}</div>
     </details>
   );
 }
@@ -2121,6 +2211,19 @@ function ToolCallEntry({
     );
   }
 
+  if (name === "subagent_supervisor" && argsObj?.action === "reply") {
+    const requestId = typeof argsObj.replyTo === "string" ? argsObj.replyTo : "unknown";
+    const reply = typeof argsObj.message === "string" ? argsObj.message : "";
+    return (
+      <SupervisorReplyCard
+        requestId={requestId}
+        message={reply}
+        isError={isError}
+        text={outputText}
+      />
+    );
+  }
+
   // Border tint reflects success/error/pending so the user can scan
   // a long thread without expanding every entry.
   const borderClass =
@@ -2291,6 +2394,15 @@ function ToolResult({ message }: { message: AgentMessageLike }) {
   // input args to show. argsText="" and the Input section won't render.
   if (toolName === "subagent") {
     return <SubagentResultCard message={message} argsText="" outputText={text} isError={isError} />;
+  }
+
+  if (toolName === "subagent_supervisor") {
+    const details =
+      typeof message.details === "object" && message.details !== null
+        ? (message.details as Record<string, unknown>)
+        : {};
+    const requestId = typeof details.replyTo === "string" ? details.replyTo : "unknown";
+    return <SupervisorReplyCard requestId={requestId} message="" isError={isError} text={text} />;
   }
 
   // Generic tool result fallback.
