@@ -39,17 +39,23 @@ export const EMPTY_COMPACTIONS: CompactionEvent[] = [];
 export const EMPTY_EXTENSION_NOTIFICATIONS: ExtensionUiNotification[] = [];
 
 /**
- * Per-session pending streaming-text delta buffer + RAF id. We accumulate
- * `message_update` text deltas here and flush at most once per animation
- * frame. Without this, fast-token providers (200+ tokens/sec) trigger a
- * Zustand `set` per token → React re-render storm → visible UI jank.
+ * Per-session pending streaming-text delta buffer + timer. We accumulate
+ * `message_update` text deltas and flush no more than once every 80 ms. A
+ * frame-level flush still made React re-render and re-run chat layout work up
+ * to 60 times per second for a growing Markdown document, which can lock up
+ * the browser during long thinking or subagent-heavy turns.
  *
  * Module-scoped (not in store state) on purpose — this is render-rate
  * machinery, not user-facing data, and shouldn't trigger Zustand
  * subscribers.
  */
+const STREAMING_TEXT_FLUSH_MS = 80;
 const pendingDeltas = new Map<string, string>();
-const pendingRaf = new Map<string, number>();
+const pendingStreamingFlushes = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Coalesce sidebar refreshes emitted in bursts while agents spawn workers. */
+const SESSION_LIST_REFRESH_DEBOUNCE_MS = 200;
+const pendingSessionListRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
  * Inflight messages-refetch state per session. We refetch on intra-turn
@@ -75,7 +81,7 @@ const refetchState = new Map<string, RefetchState>();
 /**
  * Per-session AbortController for the open SSE stream. Module-scoped
  * (not in Zustand state) for the same reason as `pendingDeltas` /
- * `pendingRaf`: it's plumbing, not data. Keeping it inside Zustand
+ * `pendingStreamingFlushes`: it's plumbing, not data. Keeping it inside Zustand
  * state would be a foot-gun — anyone who later subscribed via
  * `useStore(s => s.controllers)` would get a stable Map reference and
  * never re-render, because we mutate the Map imperatively rather than
@@ -772,6 +778,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   closeStream: (sessionId) => {
+    clearPendingStreamingText(sessionId);
     const ctrl = controllers.get(sessionId);
     if (ctrl !== undefined) {
       ctrl.abort();
@@ -1027,12 +1034,9 @@ function applyEvent(
   }
 
   if (event.type === "agent_start") {
-    // Drop any RAF + buffered deltas left over from a prior turn so they
-    // don't bleed into the new bubble.
-    const stale = pendingRaf.get(sessionId);
-    if (stale !== undefined) cancelAnimationFrame(stale);
-    pendingRaf.delete(sessionId);
-    pendingDeltas.delete(sessionId);
+    // Drop any scheduled flush and buffered deltas left over from a prior
+    // turn so they don't bleed into the new bubble.
+    clearPendingStreamingText(sessionId);
     set((s) => ({
       streamingBySession: { ...s.streamingBySession, [sessionId]: true },
       streamingTextBySession: { ...s.streamingTextBySession, [sessionId]: "" },
@@ -1044,12 +1048,9 @@ function applyEvent(
   }
 
   if (event.type === "agent_end") {
-    // Cancel the pending RAF — the post-end refetch supersedes any
-    // unflushed deltas.
-    const raf = pendingRaf.get(sessionId);
-    if (raf !== undefined) cancelAnimationFrame(raf);
-    pendingRaf.delete(sessionId);
-    pendingDeltas.delete(sessionId);
+    // Cancel the pending text flush — the post-end refetch supersedes any
+    // undisplayed deltas.
+    clearPendingStreamingText(sessionId);
     // Read the server-enriched errorMessage if present (the SDK's
     // native agent_end carries no error field; session-registry merges
     // `live.session.errorMessage` in on fan-out). We surface it as an
@@ -1219,13 +1220,11 @@ function applyEvent(
   }
 
   if (event.type === "session_list_changed") {
-    // Server-pushed nudge that a session was created (or otherwise
-    // mutated) in a project we're watching. Sent by
-    // `orchestrate_spawn_worker` immediately after creating the
-    // worker so the sidebar updates without waiting for the
-    // supervisor's enclosing turn to finish.
+    // A worker spawn can emit several list invalidations in one burst. Fetch
+    // once after the burst instead of repeatedly replacing and sorting the
+    // whole sidebar while the active chat is streaming.
     const pid = typeof event.projectId === "string" ? event.projectId : undefined;
-    if (pid !== undefined) void get().loadSessionsForProject(pid);
+    if (pid !== undefined) scheduleSessionListRefresh(get, pid);
     return;
   }
 
@@ -1262,8 +1261,8 @@ function applyEvent(
     // overflow that pi's auto-compaction couldn't recover from).
     // Surface the embedded errorMessage as a banner.
     //
-    // Also drop the streaming buffer (and any in-flight RAF /
-    // pendingDeltas) when an assistant message_end fires MID-TURN:
+    // Also drop the streaming buffer and its pending flush when an assistant
+    // message_end fires MID-TURN:
     // the refetch above has just promoted those bytes into a real
     // message, so leaving them in the streaming bubble shows the
     // text twice. Worse, the next assistant message's text_delta
@@ -1283,9 +1282,7 @@ function applyEvent(
         }
       }
       if (msg?.role === "assistant") {
-        const raf = pendingRaf.get(sessionId);
-        if (raf !== undefined) cancelAnimationFrame(raf);
-        pendingRaf.delete(sessionId);
+        clearPendingStreamingText(sessionId);
         pendingDeltas.delete(sessionId);
         set((s) => ({
           streamingTextBySession: { ...s.streamingTextBySession, [sessionId]: "" },
@@ -1402,14 +1399,14 @@ function applyEvent(
       typeof (inner as { delta?: unknown }).delta === "string"
     ) {
       const delta = (inner as { delta: string }).delta;
-      // RAF-coalesce: accumulate the delta in a module-scope buffer; flush
-      // once per frame (~16ms) instead of once per token. Cuts re-render
-      // pressure under fast-token providers without changing the final
-      // displayed text.
+      // Batch high-frequency token deltas. Rendering an ever-growing Markdown
+      // document and synchronising its scroll position every animation frame
+      // can monopolize the browser main thread; 80 ms remains responsive while
+      // reducing that work by roughly a factor of five.
       pendingDeltas.set(sessionId, (pendingDeltas.get(sessionId) ?? "") + delta);
-      if (!pendingRaf.has(sessionId)) {
-        const raf = requestAnimationFrame(() => {
-          pendingRaf.delete(sessionId);
+      if (!pendingStreamingFlushes.has(sessionId)) {
+        const timer = setTimeout(() => {
+          pendingStreamingFlushes.delete(sessionId);
           const buffered = pendingDeltas.get(sessionId) ?? "";
           if (buffered.length === 0) return;
           pendingDeltas.delete(sessionId);
@@ -1419,8 +1416,8 @@ function applyEvent(
               [sessionId]: (s.streamingTextBySession[sessionId] ?? "") + buffered,
             },
           }));
-        });
-        pendingRaf.set(sessionId, raf);
+        }, STREAMING_TEXT_FLUSH_MS);
+        pendingStreamingFlushes.set(sessionId, timer);
       }
     }
     return;
@@ -1512,6 +1509,25 @@ function applyEvent(
   // janky on slow connections.
   void event;
   void get;
+}
+
+/** Cancel a scheduled text flush and discard its undisplayed buffer. */
+function clearPendingStreamingText(sessionId: string): void {
+  const timer = pendingStreamingFlushes.get(sessionId);
+  if (timer !== undefined) clearTimeout(timer);
+  pendingStreamingFlushes.delete(sessionId);
+  pendingDeltas.delete(sessionId);
+}
+
+/** Refresh one project's sidebar once after a burst of invalidations. */
+function scheduleSessionListRefresh(get: () => SessionState, projectId: string): void {
+  const pending = pendingSessionListRefreshes.get(projectId);
+  if (pending !== undefined) clearTimeout(pending);
+  const timer = setTimeout(() => {
+    pendingSessionListRefreshes.delete(projectId);
+    void get().loadSessionsForProject(projectId);
+  }, SESSION_LIST_REFRESH_DEBOUNCE_MS);
+  pendingSessionListRefreshes.set(projectId, timer);
 }
 
 /**
