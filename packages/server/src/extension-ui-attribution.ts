@@ -52,5 +52,5 @@ export function formatUnsupportedExtensionDialog(dialog: UnsupportedExtensionDia
     dialog.extension === undefined ? "An extension" : `Extension \"${dialog.extension}\"`;
   const title = summarizeTitle(dialog.title);
   const titleSuffix = title === undefined ? "" : ` (\"${title}\")`;
-  return `unsupported_extension_dialog: ${subject} requested an interactive ${dialog.method} dialog${titleSuffix}, which Pi Forge does not support.`;
+  return `${subject} requested an interactive ${dialog.method} dialog${titleSuffix}, which Pi Forge does not support.`;
 }
