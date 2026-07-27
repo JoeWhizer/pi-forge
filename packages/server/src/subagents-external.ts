@@ -384,14 +384,6 @@ export async function deliverExternalSubagentCompletionForRun(root: string): Pro
     },
     { triggerTurn: true },
   );
-  for (const c of live.clients) {
-    c.send({
-      type: "session_list_changed",
-      sessionId: parentId,
-      projectId: live.projectId,
-      reason: "subagent_async_complete",
-    });
-  }
 }
 
 export async function deliverExternalSubagentSessionListChange(root: string): Promise<void> {

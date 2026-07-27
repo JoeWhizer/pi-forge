@@ -568,11 +568,13 @@ async function main(): Promise<void> {
       "utf8",
     );
 
-    // 6b. Every terminal status clears parent activity after a list reload,
-    // renders one durable notification, and ignores duplicate watcher scans.
-    // These are separate roots so their stable run ids cannot cross-dedupe.
-    for (const terminalState of ["failed", "stopped", "paused"] as const) {
+    // 6b. Terminal scans dispatch a single state-specific sidebar invalidation
+    // plus one durable notification. Calling each delivery path twice mirrors
+    // watcher/poll bursts and catches the old terminal-state + stale-complete
+    // event sequence.
+    for (const terminalState of ["complete", "failed", "stopped"] as const) {
       const terminalRunId = `${terminalState}-${randomUUID().slice(0, 8)}`;
+      const eventStart = parentListChanges.length;
       await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, terminalRunId), { recursive: true });
       await writeFile(
         join(subagentsExternal.SUBAGENTS_ASYNC_DIR, terminalRunId, "status.json"),
@@ -589,7 +591,7 @@ async function main(): Promise<void> {
           runId: terminalRunId,
           sessionId: parent.sessionId,
           agent: "reviewer",
-          success: terminalState === "failed" ? false : true,
+          success: terminalState !== "failed",
           state: terminalState,
           summary: `${terminalState} fixture`,
         }),
@@ -609,19 +611,19 @@ async function main(): Promise<void> {
           (details as { runId?: unknown; state?: unknown }).state === terminalState
         );
       });
+      const lifecycleReasons = parentListChanges
+        .slice(eventStart)
+        .filter((event) => event.type === "session_list_changed")
+        .map((event) => event.reason);
       assert(
         `${terminalState} completion notification is durable and exactly once`,
         notifications.length === 1,
         `notifications=${JSON.stringify(notifications)}`,
       );
       assert(
-        `${terminalState} list update is exactly once`,
-        parentListChanges.filter(
-          (event) =>
-            event.type === "session_list_changed" &&
-            event.reason === `subagent_async_${terminalState}`,
-        ).length === 1,
-        `events=${JSON.stringify(parentListChanges)}`,
+        `${terminalState} terminal scan has one state-specific sidebar event`,
+        JSON.stringify(lifecycleReasons) === JSON.stringify([`subagent_async_${terminalState}`]),
+        `events=${JSON.stringify(lifecycleReasons)}`,
       );
     }
     const terminalReloadList = await registry.listSessionsForProject(project.id, project.path);
