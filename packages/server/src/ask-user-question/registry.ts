@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AskUserQuestionResult, ConfirmationPresentation, Question } from "./types.js";
+import type { AskUserQuestionPresentation, AskUserQuestionResult, Question } from "./types.js";
 
 /**
  * In-memory registry of `ask_user_question` requests waiting on a
@@ -17,7 +17,7 @@ export interface PendingAskUserQuestion {
   requestId: string;
   sessionId: string;
   questions: Question[];
-  presentation?: ConfirmationPresentation;
+  presentation?: AskUserQuestionPresentation;
   createdAt: Date;
 }
 
@@ -49,7 +49,7 @@ export type AskQuestionEvent =
       sessionId: string;
       requestId: string;
       questions: Question[];
-      presentation?: ConfirmationPresentation;
+      presentation?: AskUserQuestionPresentation;
     }
   | { type: "ask_user_question_cancelled"; sessionId: string; requestId: string; reason: string };
 
@@ -79,7 +79,7 @@ function notify(event: AskQuestionEvent): void {
 export function registerPending(args: {
   sessionId: string;
   questions: Question[];
-  presentation?: ConfirmationPresentation;
+  presentation?: AskUserQuestionPresentation;
   signal?: AbortSignal;
   timeoutMs?: number;
   timeoutResult?: AskUserQuestionResult;

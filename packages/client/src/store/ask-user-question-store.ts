@@ -32,11 +32,37 @@ export interface ConfirmationPresentation {
   message: string;
 }
 
+export interface ForgeCustomDialogField {
+  id: string;
+  label: string;
+  type: "select" | "input" | "textarea" | "checkbox";
+  options?: string[];
+  placeholder?: string;
+  defaultValue?: string | boolean;
+  required?: boolean;
+  maxLength?: number;
+}
+
+export type ExtensionDialogPresentation =
+  | { kind: "extension_select"; extension?: string; title: string; options: string[] }
+  | { kind: "extension_input"; extension?: string; title: string; placeholder?: string }
+  | { kind: "extension_editor"; extension?: string; title: string; prefill?: string }
+  | {
+      kind: "extension_custom";
+      extension?: string;
+      schema: {
+        title: string;
+        description?: string;
+        submitLabel?: string;
+        fields: ForgeCustomDialogField[];
+      };
+    };
+
 export interface PendingAskQuestion {
   requestId: string;
   sessionId: string;
   questions: AskQuestion[];
-  presentation?: ConfirmationPresentation;
+  presentation?: ConfirmationPresentation | ExtensionDialogPresentation;
 }
 
 interface AskUserQuestionState {

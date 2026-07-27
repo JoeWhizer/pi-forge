@@ -4,8 +4,11 @@ import { api, ApiError, type AskUserQuestionAnswer } from "../lib/api-client";
 import {
   useAskUserQuestionStore,
   type AskQuestion,
+  type ConfirmationPresentation,
+  type ExtensionDialogPresentation,
   type PendingAskQuestion,
 } from "../store/ask-user-question-store";
+import { ExtensionDialogPanel } from "./ExtensionDialogPanel";
 
 /**
  * Inline panel that surfaces a pending `ask_user_question` tool
@@ -48,7 +51,18 @@ interface PendingAnswer {
 
 function PanelBody({ pending }: { pending: PendingAskQuestion }) {
   if (pending.presentation?.kind === "confirmation") {
-    return <ConfirmationPanel pending={pending} />;
+    return (
+      <ConfirmationPanel
+        pending={pending as PendingAskQuestion & { presentation: ConfirmationPresentation }}
+      />
+    );
+  }
+  if (pending.presentation !== undefined) {
+    return (
+      <ExtensionDialogPanel
+        pending={pending as PendingAskQuestion & { presentation: ExtensionDialogPresentation }}
+      />
+    );
   }
   return <QuestionnairePanel pending={pending} />;
 }
@@ -271,7 +285,11 @@ function QuestionnairePanel({ pending }: { pending: PendingAskQuestion }) {
   );
 }
 
-function ConfirmationPanel({ pending }: { pending: PendingAskQuestion }) {
+function ConfirmationPanel({
+  pending,
+}: {
+  pending: PendingAskQuestion & { presentation: ConfirmationPresentation };
+}) {
   const clearPending = useAskUserQuestionStore((s) => s.clearPending);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);

@@ -75,6 +75,7 @@ interface ServerModule {
 }
 
 interface RegistryModule {
+  bindWebExtensionContext: (live: unknown) => Promise<void>;
   createSession: (
     projectId: string,
     workspacePath: string,
@@ -90,7 +91,7 @@ interface AskRegistryModule {
   registerPending: (args: {
     sessionId: string;
     questions: unknown[];
-    presentation?: { kind: "confirmation"; title: string; message: string; extension?: string };
+    presentation?: unknown;
     signal?: AbortSignal;
   }) => {
     requestId: string;
@@ -101,6 +102,7 @@ interface AskRegistryModule {
     questions: unknown[];
     presentation?: { kind: string; title: string; message: string; extension?: string };
   }[];
+  answerPending: (requestId: string, sessionId: string, result: unknown) => boolean;
   _resetForTests: () => void;
 }
 
@@ -533,6 +535,184 @@ async function main(): Promise<void> {
         confirmationEnvelope.details.answers[0]?.answer === "Reject",
       JSON.stringify(confirmationEnvelope.details),
     );
+
+    // -------- Extension UI compatibility paths --------
+    // The installed pi-subagents 0.37 UI contract calls select(), input(),
+    // editor(), and opaque custom() factories. Bind a small fake live session
+    // to verify the browser bridge translates serialisable replies back to
+    // their native return shapes without evaluating opaque TUI factories.
+    {
+      let ui:
+        | {
+            select: (
+              title: string,
+              options: string[],
+              opts?: { timeout?: number },
+            ) => Promise<string | undefined>;
+            input: (
+              title: string,
+              placeholder?: string,
+              opts?: { timeout?: number },
+            ) => Promise<string | undefined>;
+            editor: (title: string, prefill?: string) => Promise<string | undefined>;
+            custom: <T>(factory: unknown, options?: unknown) => Promise<T>;
+          }
+        | undefined;
+      const visibleEvents: { type?: string; message?: string }[] = [];
+      const extensionSessionId = "extension-ui-test-session";
+      await registry.bindWebExtensionContext({
+        sessionId: extensionSessionId,
+        clients: new Set([
+          { send: (event: { type?: string; message?: string }) => visibleEvents.push(event) },
+        ]),
+        session: {
+          bindExtensions: async (args: { uiContext: typeof ui }) => {
+            ui = args.uiContext;
+          },
+          waitForIdle: async () => undefined,
+        },
+      });
+      const bound = ui!;
+      const resolveExtension = (answer: string, kind: "option" | "custom" = "custom"): boolean => {
+        const pending = askRegistry.getPendingForSession(extensionSessionId)[0];
+        if (pending === undefined) return false;
+        return askRegistry.answerPending(pending.requestId, extensionSessionId, {
+          content: [{ type: "text", text: answer }],
+          details: {
+            cancelled: false,
+            answers: [
+              { questionIndex: 0, question: pending.questions[0]?.question ?? "", kind, answer },
+            ],
+          },
+        });
+      };
+
+      const selectResult = bound.select("Choose", ["one", "two"]);
+      const selectPending = askRegistry.getPendingForSession(extensionSessionId)[0];
+      assert(
+        "extension select maps to pending single-choice dialog",
+        selectPending?.presentation?.kind === "extension_select" &&
+          selectPending.presentation.options[0] === "one",
+      );
+      assert(
+        "extension select response converts to string",
+        resolveExtension("two", "option") && (await selectResult) === "two",
+      );
+
+      const inputResult = bound.input("Name", "Ada");
+      assert(
+        "extension input maps to text dialog",
+        askRegistry.getPendingForSession(extensionSessionId)[0]?.presentation?.kind ===
+          "extension_input",
+      );
+      assert(
+        "extension input response converts to string",
+        resolveExtension("Ada") && (await inputResult) === "Ada",
+      );
+
+      const editorResult = bound.editor("Edit prompt", "first line");
+      assert(
+        "extension editor maps to dedicated multiline dialog",
+        askRegistry.getPendingForSession(extensionSessionId)[0]?.presentation?.kind ===
+          "extension_editor",
+      );
+      assert(
+        "extension editor preserves multiline response",
+        resolveExtension("first line\nsecond line") &&
+          (await editorResult) === "first line\nsecond line",
+      );
+
+      const customResult = bound.custom<Record<string, unknown>>(undefined, {
+        forgeDialog: {
+          title: "Custom fields",
+          fields: [
+            {
+              id: "mode",
+              label: "Mode",
+              type: "select",
+              options: ["safe", "fast"],
+              required: true,
+            },
+            { id: "notes", label: "Notes", type: "textarea", defaultValue: "" },
+          ],
+        },
+      });
+      assert(
+        "serialisable custom schema maps to constrained dialog",
+        askRegistry.getPendingForSession(extensionSessionId)[0]?.presentation?.kind ===
+          "extension_custom",
+      );
+      assert(
+        "custom schema response converts to object",
+        resolveExtension(JSON.stringify({ mode: "safe", notes: "reviewed" })) &&
+          (await customResult).mode === "safe",
+      );
+
+      const opaqueResult = await bound.custom<undefined>(() => undefined);
+      assert(
+        "opaque custom factory cancels with visible structured fallback",
+        opaqueResult === undefined &&
+          visibleEvents.some((event) => event.message?.includes("does not support")),
+      );
+
+      const timedOut = await bound.select("Timeout", ["later"], { timeout: 1 });
+      assert(
+        "extension dialog timeout cancels and clears pending request",
+        timedOut === undefined && askRegistry.getPendingForSession(extensionSessionId).length === 0,
+      );
+    }
+
+    // Extension presentation responses are validated by the same answer route
+    // so a stale or malformed browser payload cannot resolve the request.
+    {
+      const { requestId: extensionReqId, result: extensionResult } = askRegistry.registerPending({
+        sessionId: live.sessionId,
+        questions: [
+          {
+            question: "Select mode",
+            header: "Extension",
+            options: [
+              { label: "Continue", description: "continue" },
+              { label: "Cancel", description: "cancel" },
+            ],
+          },
+        ],
+        presentation: {
+          kind: "extension_select",
+          title: "Select mode",
+          options: ["safe", "fast"],
+        },
+      });
+      const invalidExtension = await jsend(
+        base,
+        "POST",
+        `/api/v1/sessions/${live.sessionId}/ask-user-question/answer`,
+        {
+          requestId: extensionReqId,
+          answers: [
+            { questionIndex: 0, question: "Select mode", kind: "option", answer: "unsafe" },
+          ],
+        },
+      );
+      assert("invalid extension select response → 400", invalidExtension.status === 400);
+      const validExtension = await jsend(
+        base,
+        "POST",
+        `/api/v1/sessions/${live.sessionId}/ask-user-question/answer`,
+        {
+          requestId: extensionReqId,
+          answers: [{ questionIndex: 0, question: "Select mode", kind: "option", answer: "safe" }],
+        },
+      );
+      assert("valid extension select response → 204", validExtension.status === 204);
+      const extensionEnvelope = (await extensionResult) as {
+        details: { answers: { answer: string }[] };
+      };
+      assert(
+        "extension route returns validated response envelope",
+        extensionEnvelope.details.answers[0]?.answer === "safe",
+      );
+    }
 
     // -------- Cancel path --------
     const { requestId: cancelReqId, result: cancelResult } = askRegistry.registerPending({

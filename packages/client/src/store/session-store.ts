@@ -17,6 +17,7 @@ import { postCrossTab, subscribeCrossTab } from "../lib/cross-tab";
 import {
   useAskUserQuestionStore,
   type ConfirmationPresentation,
+  type ExtensionDialogPresentation,
   type PendingAskQuestion,
 } from "./ask-user-question-store";
 import { useTodoStore, type Task as TodoTaskShape } from "./todo-store";
@@ -1000,27 +1001,94 @@ export const useSessionStore = create<SessionState>((set, get) => ({
  * to stay correct without modelling every incremental delta — the bandwidth
  * is fine for chat-tier traffic and avoids drift between SDK message shapes.
  */
-function parseConfirmationPresentation(
+function parseExtensionPresentation(
   value: unknown,
-): ConfirmationPresentation | undefined | null {
+): ConfirmationPresentation | ExtensionDialogPresentation | undefined | null {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const presentation = value as Record<string, unknown>;
+  const extension =
+    typeof presentation.extension === "string" ? { extension: presentation.extension } : {};
   if (
-    presentation.kind !== "confirmation" ||
-    typeof presentation.title !== "string" ||
-    presentation.title.length === 0 ||
-    typeof presentation.message !== "string" ||
-    (presentation.extension !== undefined && typeof presentation.extension !== "string")
+    presentation.kind === "confirmation" &&
+    typeof presentation.title === "string" &&
+    presentation.title.length > 0 &&
+    typeof presentation.message === "string"
   ) {
-    return null;
+    return {
+      kind: "confirmation",
+      title: presentation.title,
+      message: presentation.message,
+      ...extension,
+    };
   }
-  return {
-    kind: "confirmation",
-    title: presentation.title,
-    message: presentation.message,
-    ...(typeof presentation.extension === "string" ? { extension: presentation.extension } : {}),
-  };
+  if (
+    presentation.kind === "extension_select" &&
+    typeof presentation.title === "string" &&
+    Array.isArray(presentation.options) &&
+    presentation.options.length > 0 &&
+    presentation.options.every((option) => typeof option === "string")
+  ) {
+    return {
+      kind: "extension_select",
+      title: presentation.title,
+      options: presentation.options,
+      ...extension,
+    };
+  }
+  if (presentation.kind === "extension_input" && typeof presentation.title === "string") {
+    return {
+      kind: "extension_input",
+      title: presentation.title,
+      ...(typeof presentation.placeholder === "string"
+        ? { placeholder: presentation.placeholder }
+        : {}),
+      ...extension,
+    };
+  }
+  if (presentation.kind === "extension_editor" && typeof presentation.title === "string") {
+    return {
+      kind: "extension_editor",
+      title: presentation.title,
+      ...(typeof presentation.prefill === "string" ? { prefill: presentation.prefill } : {}),
+      ...extension,
+    };
+  }
+  if (
+    presentation.kind === "extension_custom" &&
+    presentation.schema !== null &&
+    typeof presentation.schema === "object" &&
+    !Array.isArray(presentation.schema)
+  ) {
+    const schema = presentation.schema as Record<string, unknown>;
+    if (
+      typeof schema.title !== "string" ||
+      !Array.isArray(schema.fields) ||
+      schema.fields.length === 0 ||
+      !schema.fields.every(
+        (field) =>
+          field !== null &&
+          typeof field === "object" &&
+          !Array.isArray(field) &&
+          typeof (field as Record<string, unknown>).id === "string" &&
+          typeof (field as Record<string, unknown>).label === "string" &&
+          ["select", "input", "textarea", "checkbox"].includes(
+            (field as Record<string, unknown>).type as string,
+          ),
+      )
+    ) {
+      return null;
+    }
+    return {
+      kind: "extension_custom",
+      schema: schema as Extract<
+        ExtensionDialogPresentation,
+        { kind: "extension_custom" }
+      >["schema"],
+      ...extension,
+    };
+  }
+  return null;
 }
 
 function applyEvent(
@@ -1347,7 +1415,7 @@ function applyEvent(
   if (event.type === "ask_user_question") {
     const requestId = typeof event.requestId === "string" ? event.requestId : undefined;
     const questions = Array.isArray(event.questions) ? event.questions : undefined;
-    const presentation = parseConfirmationPresentation(event.presentation);
+    const presentation = parseExtensionPresentation(event.presentation);
     if (requestId === undefined || questions === undefined || presentation === null) return;
     useAskUserQuestionStore.getState().setPending({
       requestId,

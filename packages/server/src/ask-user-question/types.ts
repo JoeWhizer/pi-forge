@@ -58,6 +58,38 @@ export interface ConfirmationPresentation {
   message: string;
 }
 
+/** A serialisable, browser-safe subset of extension custom UI. */
+export interface ForgeCustomDialogField {
+  id: string;
+  label: string;
+  type: "select" | "input" | "textarea" | "checkbox";
+  options?: string[];
+  placeholder?: string;
+  defaultValue?: string | boolean;
+  required?: boolean;
+  maxLength?: number;
+}
+
+export interface ForgeCustomDialogSchema {
+  title: string;
+  description?: string;
+  submitLabel?: string;
+  fields: ForgeCustomDialogField[];
+}
+
+/**
+ * Presentation metadata for extension UI calls bridged through the existing
+ * ask-user-question request lifecycle. Opaque terminal components are never
+ * serialised or evaluated in the browser.
+ */
+export type ExtensionDialogPresentation =
+  | { kind: "extension_select"; extension?: string; title: string; options: string[] }
+  | { kind: "extension_input"; extension?: string; title: string; placeholder?: string }
+  | { kind: "extension_editor"; extension?: string; title: string; prefill?: string }
+  | { kind: "extension_custom"; extension?: string; schema: ForgeCustomDialogSchema };
+
+export type AskUserQuestionPresentation = ConfirmationPresentation | ExtensionDialogPresentation;
+
 /**
  * Per-question answer envelope returned to the agent. Mirrors the
  * plugin's discriminator-by-kind shape so a single prompt

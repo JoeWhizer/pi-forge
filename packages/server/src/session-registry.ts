@@ -33,6 +33,12 @@ import {
 } from "./mcp/manager.js";
 import { createAskUserQuestionTool } from "./ask-user-question/tool.js";
 import { buildResult } from "./ask-user-question/envelope.js";
+import type {
+  AskUserQuestionPresentation,
+  ForgeCustomDialogField,
+  ForgeCustomDialogSchema,
+  Question,
+} from "./ask-user-question/types.js";
 import {
   clearForSession as clearAskUserQuestionForSession,
   getPendingForSession as getPendingAskUserQuestions,
@@ -410,10 +416,129 @@ export function findLastAssistantErrorMessage(
 }
 
 const EXTENSION_UI_NOTIFICATION_MAX_LENGTH = 4_000;
-const EXTENSION_CONFIRM_TIMEOUT_MS = 5 * 60 * 1_000;
+const EXTENSION_DIALOG_TIMEOUT_MS = 5 * 60 * 1_000;
+const EXTENSION_CUSTOM_MAX_FIELDS = 8;
+const EXTENSION_CUSTOM_MAX_OPTIONS = 20;
+const EXTENSION_EDITOR_MAX_LENGTH = 12_000;
+
+type ForgeCustomUiOptions = NonNullable<Parameters<ExtensionUIContext["custom"]>[1]> & {
+  forgeDialog?: unknown;
+};
 
 function safeExtensionDialogText(value: string | undefined, maxLength: number): string {
   return (value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function extensionDialogTimeout(opts?: ExtensionUIDialogOptions): number {
+  return typeof opts?.timeout === "number" && Number.isFinite(opts.timeout)
+    ? Math.min(Math.max(Math.floor(opts.timeout), 1), EXTENSION_DIALOG_TIMEOUT_MS)
+    : EXTENSION_DIALOG_TIMEOUT_MS;
+}
+
+function extensionDialogQuestion(title: string, header: string): Question {
+  // The presentation determines the extension-specific control. These options
+  // keep the request structurally compatible with ask_user_question replay.
+  return {
+    question: title,
+    header,
+    options: [
+      { label: "Continue", description: "Submit the extension dialog." },
+      { label: "Cancel", description: "Cancel the extension dialog." },
+    ],
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeForgeCustomDialog(options: unknown): ForgeCustomDialogSchema | undefined {
+  if (!isRecord(options) || !isRecord(options.forgeDialog)) return undefined;
+  const raw = options.forgeDialog;
+  const title = safeExtensionDialogText(typeof raw.title === "string" ? raw.title : undefined, 160);
+  if (
+    title.length === 0 ||
+    !Array.isArray(raw.fields) ||
+    raw.fields.length === 0 ||
+    raw.fields.length > EXTENSION_CUSTOM_MAX_FIELDS
+  ) {
+    return undefined;
+  }
+  const ids = new Set<string>();
+  const fields: ForgeCustomDialogField[] = [];
+  for (const candidate of raw.fields) {
+    if (!isRecord(candidate)) return undefined;
+    const id = safeExtensionDialogText(
+      typeof candidate.id === "string" ? candidate.id : undefined,
+      64,
+    );
+    const label = safeExtensionDialogText(
+      typeof candidate.label === "string" ? candidate.label : undefined,
+      160,
+    );
+    const type = candidate.type;
+    if (
+      id.length === 0 ||
+      label.length === 0 ||
+      ids.has(id) ||
+      (type !== "select" && type !== "input" && type !== "textarea" && type !== "checkbox")
+    ) {
+      return undefined;
+    }
+    ids.add(id);
+    const maxLength =
+      typeof candidate.maxLength === "number" &&
+      Number.isInteger(candidate.maxLength) &&
+      candidate.maxLength > 0
+        ? Math.min(candidate.maxLength, type === "textarea" ? EXTENSION_EDITOR_MAX_LENGTH : 4_000)
+        : type === "textarea"
+          ? EXTENSION_EDITOR_MAX_LENGTH
+          : 4_000;
+    const field: ForgeCustomDialogField = {
+      id,
+      label,
+      type,
+      ...(candidate.required === true ? { required: true } : {}),
+      ...(type === "input" || type === "textarea" ? { maxLength } : {}),
+    };
+    if (type === "select") {
+      if (
+        !Array.isArray(candidate.options) ||
+        candidate.options.length === 0 ||
+        candidate.options.length > EXTENSION_CUSTOM_MAX_OPTIONS
+      )
+        return undefined;
+      const values = candidate.options.map((value) =>
+        safeExtensionDialogText(typeof value === "string" ? value : undefined, 160),
+      );
+      if (values.some((value) => value.length === 0) || new Set(values).size !== values.length)
+        return undefined;
+      field.options = values;
+      if (typeof candidate.defaultValue === "string" && values.includes(candidate.defaultValue)) {
+        field.defaultValue = candidate.defaultValue;
+      }
+    } else if (type === "checkbox") {
+      if (typeof candidate.defaultValue === "boolean") field.defaultValue = candidate.defaultValue;
+    } else {
+      if (typeof candidate.placeholder === "string") {
+        field.placeholder = safeExtensionDialogText(candidate.placeholder, 240);
+      }
+      if (typeof candidate.defaultValue === "string") {
+        field.defaultValue = candidate.defaultValue.slice(0, maxLength);
+      }
+    }
+    fields.push(field);
+  }
+  return {
+    title,
+    fields,
+    ...(typeof raw.description === "string"
+      ? { description: safeExtensionDialogText(raw.description, 1_000) }
+      : {}),
+    ...(typeof raw.submitLabel === "string"
+      ? { submitLabel: safeExtensionDialogText(raw.submitLabel, 60) }
+      : {}),
+  };
 }
 
 function emitExtensionUiNotification(
@@ -443,7 +568,7 @@ function emitExtensionUiNotification(
  * session. Browser clients can show notifications and confirmations, while
  * unsupported terminal-only dialogs fail safely with an SSE warning.
  */
-async function bindWebExtensionContext(live: LiveSession): Promise<void> {
+export async function bindWebExtensionContext(live: LiveSession): Promise<void> {
   const unsupportedDialog = (
     method: UnsupportedExtensionDialog["method"],
     title?: string,
@@ -458,10 +583,60 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
       "warning",
     );
   };
-  const uiContext = {
-    select: async (title: string) => {
-      unsupportedDialog("select", title);
+  const openExtensionDialog = async (
+    presentation: AskUserQuestionPresentation,
+    opts?: ExtensionUIDialogOptions,
+  ) => {
+    // One browser panel per session prevents a later extension request from
+    // replacing an in-flight request or accepting a stale response.
+    if (getPendingAskUserQuestions(live.sessionId).length > 0) return undefined;
+    const title =
+      presentation.kind === "extension_custom" ? presentation.schema.title : presentation.title;
+    const { result } = registerPending({
+      sessionId: live.sessionId,
+      questions: [extensionDialogQuestion(title, "Extension")],
+      presentation,
+      ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+      timeoutMs: extensionDialogTimeout(opts),
+      timeoutResult: buildResult([], {
+        cancelled: true,
+        error: "extension_dialog_timed_out",
+        questionCount: 1,
+      }),
+    });
+    try {
+      return await result;
+    } catch {
       return undefined;
+    }
+  };
+  const uiContext = {
+    select: async (title: string, options: string[], opts?: ExtensionUIDialogOptions) => {
+      const safeOptions = options
+        .filter((option) => typeof option === "string")
+        .map((option) => safeExtensionDialogText(option, 160))
+        .filter((option) => option.length > 0);
+      if (safeOptions.length === 0 || new Set(safeOptions).size !== safeOptions.length) {
+        emitExtensionUiNotification(
+          live,
+          "invalid_extension_dialog: select requires unique options.",
+          "warning",
+        );
+        return undefined;
+      }
+      const extension = extensionNameFromStack(new Error().stack);
+      const answer = await openExtensionDialog(
+        {
+          kind: "extension_select",
+          ...(extension !== undefined ? { extension } : {}),
+          title: safeExtensionDialogText(title, 160) || "Select an option",
+          options: safeOptions,
+        },
+        opts,
+      );
+      return answer?.details.cancelled === true
+        ? undefined
+        : (answer?.details.answers[0]?.answer ?? undefined);
     },
     confirm: async (title: string, message: string, opts?: ExtensionUIDialogOptions) => {
       // The UI presents one pending interaction per session. Do not replace an
@@ -472,8 +647,8 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
       const extension = extensionNameFromStack(new Error().stack);
       const timeoutMs =
         typeof opts?.timeout === "number" && Number.isFinite(opts.timeout)
-          ? Math.min(Math.max(Math.floor(opts.timeout), 1), EXTENSION_CONFIRM_TIMEOUT_MS)
-          : EXTENSION_CONFIRM_TIMEOUT_MS;
+          ? Math.min(Math.max(Math.floor(opts.timeout), 1), EXTENSION_DIALOG_TIMEOUT_MS)
+          : EXTENSION_DIALOG_TIMEOUT_MS;
       const { result } = registerPending({
         sessionId: live.sessionId,
         questions: [
@@ -507,9 +682,22 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
         return false;
       }
     },
-    input: async (title: string) => {
-      unsupportedDialog("input", title);
-      return undefined;
+    input: async (title: string, placeholder?: string, opts?: ExtensionUIDialogOptions) => {
+      const extension = extensionNameFromStack(new Error().stack);
+      const answer = await openExtensionDialog(
+        {
+          kind: "extension_input",
+          ...(extension !== undefined ? { extension } : {}),
+          title: safeExtensionDialogText(title, 160) || "Enter text",
+          ...(typeof placeholder === "string"
+            ? { placeholder: safeExtensionDialogText(placeholder, 240) }
+            : {}),
+        },
+        opts,
+      );
+      return answer?.details.cancelled === true
+        ? undefined
+        : (answer?.details.answers[0]?.answer ?? undefined);
     },
     notify: (message: string, level?: "info" | "warning" | "error") => {
       emitExtensionUiNotification(live, message, level);
@@ -524,16 +712,49 @@ async function bindWebExtensionContext(live: LiveSession): Promise<void> {
     setFooter: () => undefined,
     setHeader: () => undefined,
     setTitle: () => undefined,
-    custom: async <T>() => {
-      unsupportedDialog("custom");
-      return undefined as T;
+    custom: async <T>(_factory: unknown, options?: ForgeCustomUiOptions) => {
+      const schema = normalizeForgeCustomDialog(options);
+      if (schema === undefined) {
+        // Pi 0.37 custom() receives an opaque terminal-component factory. It
+        // cannot be safely replayed in a browser, so make cancellation and the
+        // compatibility boundary visible instead of pretending to render it.
+        unsupportedDialog("custom");
+        return undefined as T;
+      }
+      const extension = extensionNameFromStack(new Error().stack);
+      const answer = await openExtensionDialog(
+        {
+          kind: "extension_custom",
+          ...(extension !== undefined ? { extension } : {}),
+          schema,
+        },
+        undefined,
+      );
+      if (answer?.details.cancelled === true) return undefined as T;
+      const raw = answer?.details.answers[0]?.answer;
+      if (typeof raw !== "string") return undefined as T;
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        return undefined as T;
+      }
     },
     pasteToEditor: () => undefined,
     setEditorText: () => undefined,
     getEditorText: () => "",
-    editor: async (title: string) => {
-      unsupportedDialog("editor", title);
-      return undefined;
+    editor: async (title: string, prefill?: string) => {
+      const extension = extensionNameFromStack(new Error().stack);
+      const answer = await openExtensionDialog({
+        kind: "extension_editor",
+        ...(extension !== undefined ? { extension } : {}),
+        title: safeExtensionDialogText(title, 160) || "Edit text",
+        ...(typeof prefill === "string"
+          ? { prefill: prefill.slice(0, EXTENSION_EDITOR_MAX_LENGTH) }
+          : {}),
+      });
+      return answer?.details.cancelled === true
+        ? undefined
+        : (answer?.details.answers[0]?.answer ?? undefined);
     },
     addAutocompleteProvider: () => undefined,
     setEditorComponent: () => undefined,

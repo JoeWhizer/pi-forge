@@ -25,6 +25,23 @@ When the agent invokes `ask_user_question`, pi-forge:
 5. Returns the structured envelope to the agent so it can branch on
    `details.answers[].kind` and `details.cancelled`.
 
+## Extension UI compatibility
+
+Browser sessions bridge extension `ui.select`, `ui.input`, and `ui.editor`
+calls through the same pending-request/SSE lifecycle as this tool. Select and
+input responses return strings (or `undefined` on cancellation); editor opens
+an accessible multiline dialog and preserves line breaks. Request IDs,
+cancellation, timeout, reconnect replay, and stale-response checks remain the
+same as for questionnaires.
+
+`ui.custom` is intentionally limited to an opt-in serialisable
+`options.forgeDialog` schema with `select`, `input`, `textarea`, and `checkbox`
+fields. Pi-subagents 0.37's normal `custom` API supplies an opaque terminal
+component factory; pi-forge does not emulate or execute that terminal UI in
+the browser. Such calls visibly report an unsupported-dialog fallback and
+return `undefined` (cancellation). Extension authors must opt into the schema
+bridge when they need browser custom forms.
+
 ## Disabling the tool
 
 The tool appears under **Settings → Tools → Built-in tools**. Toggle

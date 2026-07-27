@@ -2,7 +2,11 @@ import type { FastifyPluginAsync } from "fastify";
 import { getSession } from "../session-registry.js";
 import { answerPending, getPendingForSession } from "../ask-user-question/registry.js";
 import { buildResult } from "../ask-user-question/envelope.js";
-import type { QuestionAnswer } from "../ask-user-question/types.js";
+import type {
+  AskUserQuestionPresentation,
+  ForgeCustomDialogField,
+  QuestionAnswer,
+} from "../ask-user-question/types.js";
 import { errorSchema } from "./_schemas.js";
 
 /**
@@ -62,6 +66,71 @@ function isValidConfirmationResponse(body: AnswerBody, expectedQuestion: string)
     answer.kind === "option" &&
     (answer.answer === "Approve" || answer.answer === "Reject")
   );
+}
+
+function isValidCustomValue(field: ForgeCustomDialogField, value: unknown): boolean {
+  if (field.type === "checkbox") return typeof value === "boolean";
+  if (typeof value !== "string") return false;
+  if (field.required === true && value.trim().length === 0) return false;
+  if (field.maxLength !== undefined && value.length > field.maxLength) return false;
+  return field.type !== "select" || field.options?.includes(value) === true;
+}
+
+function isValidExtensionResponse(
+  body: AnswerBody,
+  presentation: AskUserQuestionPresentation,
+): boolean {
+  if (body.cancelled === true) return true;
+  if (!Array.isArray(body.answers) || body.answers.length !== 1) return false;
+  const [answer] = body.answers;
+  if (
+    answer === undefined ||
+    answer.questionIndex !== 0 ||
+    (answer.kind !== "custom" && answer.kind !== "option")
+  ) {
+    return false;
+  }
+  if (presentation.kind === "extension_select") {
+    return (
+      answer.kind === "option" &&
+      typeof answer.answer === "string" &&
+      presentation.options.includes(answer.answer)
+    );
+  }
+  if (presentation.kind === "extension_input") {
+    return (
+      answer.kind === "custom" && typeof answer.answer === "string" && answer.answer.length <= 4_000
+    );
+  }
+  if (presentation.kind === "extension_editor") {
+    return (
+      answer.kind === "custom" &&
+      typeof answer.answer === "string" &&
+      answer.answer.length <= 12_000
+    );
+  }
+  if (
+    presentation.kind !== "extension_custom" ||
+    answer.kind !== "custom" ||
+    typeof answer.answer !== "string"
+  ) {
+    return false;
+  }
+  try {
+    const values: unknown = JSON.parse(answer.answer);
+    if (values === null || typeof values !== "object" || Array.isArray(values)) return false;
+    const record = values as Record<string, unknown>;
+    return (
+      Object.keys(record).length === presentation.schema.fields.length &&
+      presentation.schema.fields.every(
+        (field) =>
+          Object.prototype.hasOwnProperty.call(record, field.id) &&
+          isValidCustomValue(field, record[field.id]),
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
@@ -168,6 +237,13 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
         !isValidConfirmationResponse(req.body, pending.questions[0]?.question ?? "")
       ) {
         return reply.code(400).send({ error: "invalid_confirmation_response" });
+      }
+      if (
+        pending?.presentation !== undefined &&
+        pending.presentation.kind !== "confirmation" &&
+        !isValidExtensionResponse(req.body, pending.presentation)
+      ) {
+        return reply.code(400).send({ error: "invalid_extension_dialog_response" });
       }
       const questionCount = pending?.questions.length ?? answers.length;
       const envelope = buildResult(answers, { cancelled, questionCount });
