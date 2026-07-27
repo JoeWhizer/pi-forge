@@ -356,15 +356,12 @@ no extra config and renders the result as a rich card in the chat
 (integration detail in `CLAUDE.md` if you're modifying the discovery
 or render path).
 
-### pi-subagents pause acknowledgement
+### pi-subagents lifecycle status
 
-With pi-subagents 0.37, `subagent({ action: "interrupt" })` reports that
-an interrupt was **requested** after it writes the control request; it does
-not wait for the detached runner to pause. Forge therefore keeps any active
-spinner until the matching `status.json` reports `paused`, then displays a
-non-spinning paused state. A failed, missing, stale, or unacknowledged run ID
-is never presented as a confirmed pause. This is an upstream control-channel
-limitation; Forge does not modify installed plugin files.
+Pi Forge does not offer a pause control for pi-subagents 0.37 because its
+pause request is not reliable. When an externally observed run reports
+`paused`, Forge retains it as a non-spinning lifecycle status. Running,
+stopped, complete, and failed status indicators remain available.
 
 ## Docker bind mounts
 

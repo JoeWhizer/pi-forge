@@ -10,7 +10,7 @@ import { EMPTY_SESSIONS, useSessionStore } from "../store/session-store";
 import { useProjectStore } from "../store/project-store";
 import { ConfirmDialog } from "./Modal";
 import type { UnifiedSession } from "../lib/api-client";
-import { backgroundSubagentRunCounts } from "../lib/subagent-control-state";
+import { backgroundSubagentRunCounts } from "../lib/subagent-run-state";
 
 interface Props {
   projectId: string;
