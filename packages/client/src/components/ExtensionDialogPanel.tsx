@@ -161,14 +161,21 @@ export function ExtensionDialogPanel({ pending }: Props) {
           </div>
         )}
         {presentation.kind === "extension_input" && (
-          <input
-            autoFocus
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={presentation.placeholder}
-            maxLength={4000}
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-100 light:border-neutral-300 light:bg-white light:text-neutral-900"
-          />
+          <label
+            className="block text-xs text-neutral-200 light:text-neutral-800"
+            htmlFor={`extension-input-${pending.requestId}`}
+          >
+            <span className="mb-1 block">{title}</span>
+            <input
+              id={`extension-input-${pending.requestId}`}
+              autoFocus
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={presentation.placeholder}
+              maxLength={4000}
+              className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-100 light:border-neutral-300 light:bg-white light:text-neutral-900"
+            />
+          </label>
         )}
         {presentation.kind === "extension_editor" && (
           <textarea

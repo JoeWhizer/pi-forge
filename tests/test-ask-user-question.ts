@@ -655,6 +655,38 @@ async function main(): Promise<void> {
           visibleEvents.some((event) => event.message?.includes("does not support")),
       );
 
+      const firstDialog = bound.select("Already pending", ["one"]);
+      const conflictedDialog = await bound.input("Conflicting dialog");
+      assert(
+        "conflicting extension dialog is visibly rejected",
+        conflictedDialog === undefined &&
+          visibleEvents.some((event) => event.message?.includes("extension_dialog_conflict")),
+      );
+      const firstPending = askRegistry.getPendingForSession(extensionSessionId)[0];
+      assert(
+        "conflicting dialog does not replace the original request",
+        firstPending?.presentation?.kind === "extension_select",
+      );
+      assert(
+        "original dialog remains answerable after conflict",
+        firstPending !== undefined &&
+          askRegistry.answerPending(firstPending.requestId, extensionSessionId, {
+            content: [{ type: "text", text: "one" }],
+            details: {
+              cancelled: false,
+              answers: [
+                {
+                  questionIndex: 0,
+                  question: firstPending.questions[0]?.question ?? "",
+                  kind: "option",
+                  answer: "one",
+                },
+              ],
+            },
+          }) &&
+          (await firstDialog) === "one",
+      );
+
       const timedOut = await bound.select("Timeout", ["later"], { timeout: 1 });
       assert(
         "extension dialog timeout cancels and clears pending request",
@@ -695,6 +727,20 @@ async function main(): Promise<void> {
         },
       );
       assert("invalid extension select response → 400", invalidExtension.status === 400);
+      const extensionPendingGet = await jget(
+        base,
+        `/api/v1/sessions/${live.sessionId}/ask-user-question/pending`,
+      );
+      const extensionPendingEntry = (
+        extensionPendingGet.body as {
+          pending?: { requestId?: string; presentation?: { kind?: string } }[];
+        }
+      ).pending?.find((entry) => entry.requestId === extensionReqId);
+      assert(
+        "pending GET response schema accepts extension presentation",
+        extensionPendingGet.status === 200 &&
+          extensionPendingEntry?.presentation?.kind === "extension_select",
+      );
       const validExtension = await jsend(
         base,
         "POST",
@@ -712,6 +758,49 @@ async function main(): Promise<void> {
         "extension route returns validated response envelope",
         extensionEnvelope.details.answers[0]?.answer === "safe",
       );
+
+      const { requestId: optionalSelectReqId, result: optionalSelectResult } =
+        askRegistry.registerPending({
+          sessionId: live.sessionId,
+          questions: [
+            {
+              question: "Optional mode",
+              header: "Extension",
+              options: [
+                { label: "Continue", description: "continue" },
+                { label: "Cancel", description: "cancel" },
+              ],
+            },
+          ],
+          presentation: {
+            kind: "extension_custom",
+            schema: {
+              title: "Optional mode",
+              fields: [{ id: "mode", label: "Mode", type: "select", options: ["safe"] }],
+            },
+          },
+        });
+      const optionalSelectResponse = await jsend(
+        base,
+        "POST",
+        `/api/v1/sessions/${live.sessionId}/ask-user-question/answer`,
+        {
+          requestId: optionalSelectReqId,
+          answers: [
+            {
+              questionIndex: 0,
+              question: "Optional mode",
+              kind: "custom",
+              answer: JSON.stringify({ mode: "" }),
+            },
+          ],
+        },
+      );
+      assert(
+        "optional custom select accepts empty value → 204",
+        optionalSelectResponse.status === 204,
+      );
+      await optionalSelectResult;
     }
 
     // -------- Cancel path --------

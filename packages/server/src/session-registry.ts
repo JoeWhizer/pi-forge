@@ -588,8 +588,20 @@ export async function bindWebExtensionContext(live: LiveSession): Promise<void> 
     opts?: ExtensionUIDialogOptions,
   ) => {
     // One browser panel per session prevents a later extension request from
-    // replacing an in-flight request or accepting a stale response.
-    if (getPendingAskUserQuestions(live.sessionId).length > 0) return undefined;
+    // replacing an in-flight request or accepting a stale response. Report the
+    // conflict visibly instead of silently returning an API-shaped undefined.
+    if (getPendingAskUserQuestions(live.sessionId).length > 0) {
+      emitExtensionUiNotification(
+        live,
+        "extension_dialog_conflict: another interactive dialog is already pending.",
+        "warning",
+      );
+      return buildResult([], {
+        cancelled: true,
+        error: "extension_dialog_already_pending",
+        questionCount: 1,
+      });
+    }
     const title =
       presentation.kind === "extension_custom" ? presentation.schema.title : presentation.title;
     const { result } = registerPending({
@@ -641,7 +653,14 @@ export async function bindWebExtensionContext(live: LiveSession): Promise<void> 
     confirm: async (title: string, message: string, opts?: ExtensionUIDialogOptions) => {
       // The UI presents one pending interaction per session. Do not replace an
       // existing questionnaire or confirmation with a later extension prompt.
-      if (getPendingAskUserQuestions(live.sessionId).length > 0) return false;
+      if (getPendingAskUserQuestions(live.sessionId).length > 0) {
+        emitExtensionUiNotification(
+          live,
+          "extension_dialog_conflict: another interactive dialog is already pending.",
+          "warning",
+        );
+        return false;
+      }
       const confirmationTitle = safeExtensionDialogText(title, 160) || "Confirmation";
       const confirmationMessage = safeExtensionDialogText(message, 4_000);
       const extension = extensionNameFromStack(new Error().stack);

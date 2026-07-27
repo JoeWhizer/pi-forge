@@ -73,7 +73,10 @@ function isValidCustomValue(field: ForgeCustomDialogField, value: unknown): bool
   if (typeof value !== "string") return false;
   if (field.required === true && value.trim().length === 0) return false;
   if (field.maxLength !== undefined && value.length > field.maxLength) return false;
-  return field.type !== "select" || field.options?.includes(value) === true;
+  if (field.type !== "select") return true;
+  return value.length === 0 && field.required !== true
+    ? true
+    : field.options?.includes(value) === true;
 }
 
 function isValidExtensionResponse(
@@ -162,14 +165,48 @@ export const askUserQuestionRoutes: FastifyPluginAsync = async (fastify) => {
                     requestId: { type: "string" },
                     questions: { type: "array" },
                     presentation: {
-                      type: "object",
-                      required: ["kind", "title", "message"],
-                      properties: {
-                        kind: { type: "string", const: "confirmation" },
-                        extension: { type: "string" },
-                        title: { type: "string" },
-                        message: { type: "string" },
-                      },
+                      anyOf: [
+                        {
+                          type: "object",
+                          required: ["kind", "title", "message"],
+                          properties: {
+                            kind: { type: "string", const: "confirmation" },
+                            extension: { type: "string" },
+                            title: { type: "string" },
+                            message: { type: "string" },
+                          },
+                        },
+                        {
+                          type: "object",
+                          required: ["kind", "title", "options"],
+                          properties: {
+                            kind: { type: "string", const: "extension_select" },
+                            extension: { type: "string" },
+                            title: { type: "string" },
+                            options: { type: "array", items: { type: "string" } },
+                          },
+                        },
+                        {
+                          type: "object",
+                          required: ["kind", "title"],
+                          properties: {
+                            kind: { type: "string", enum: ["extension_input", "extension_editor"] },
+                            extension: { type: "string" },
+                            title: { type: "string" },
+                            placeholder: { type: "string" },
+                            prefill: { type: "string" },
+                          },
+                        },
+                        {
+                          type: "object",
+                          required: ["kind", "schema"],
+                          properties: {
+                            kind: { type: "string", const: "extension_custom" },
+                            extension: { type: "string" },
+                            schema: { type: "object" },
+                          },
+                        },
+                      ],
                     },
                   },
                 },
