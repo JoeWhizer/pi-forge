@@ -97,7 +97,10 @@ interface TestUnifiedSession {
   isLive?: boolean;
   isExternalLive?: boolean;
   externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
-  backgroundSubagentRuns?: { runId: string; state: "queued" | "running" }[];
+  backgroundSubagentRuns?: {
+    runId: string;
+    state: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
+  }[];
 }
 interface TestRegistry {
   createSession: (projectId: string, workspacePath: string) => Promise<TestLive>;
@@ -273,24 +276,29 @@ async function main(): Promise<void> {
         ) === true,
       `row=${JSON.stringify(preDiscoveryPausedList.find((s) => s.sessionId === delayedParent.sessionId))}`,
     );
-    await writeFile(
-      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId, "status.json"),
-      JSON.stringify({
-        runId: preDiscoveryRunId,
-        sessionId: delayedParent.sessionId,
-        state: "complete",
-      }),
-      "utf8",
-    );
-    const preDiscoveryTerminalList = await registry.listSessionsForProject(
-      project.id,
-      project.path,
-    );
-    assert(
-      "complete background status clears parent lifecycle state before child discovery",
-      preDiscoveryTerminalList.find((s) => s.sessionId === delayedParent.sessionId)
-        ?.backgroundSubagentRuns === undefined,
-    );
+    for (const terminalState of ["complete", "failed", "stopped"] as const) {
+      await writeFile(
+        join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId, "status.json"),
+        JSON.stringify({
+          runId: preDiscoveryRunId,
+          sessionId: delayedParent.sessionId,
+          state: terminalState,
+        }),
+        "utf8",
+      );
+      const preDiscoveryTerminalList = await registry.listSessionsForProject(
+        project.id,
+        project.path,
+      );
+      assert(
+        `${terminalState} status remains in the parent lifecycle projection before child discovery`,
+        preDiscoveryTerminalList
+          .find((s) => s.sessionId === delayedParent.sessionId)
+          ?.backgroundSubagentRuns?.some(
+            (run) => run.runId === preDiscoveryRunId && run.state === terminalState,
+          ) === true,
+      );
+    }
 
     // 2. Fake a pi-subagents child JSONL nested under the parent's id.
     //    Layout: <sessionDir>/<projectId>/<parentId>/<runId>/<childId>.jsonl
@@ -735,8 +743,11 @@ async function main(): Promise<void> {
       persistedStoppedStatus.state === "stopped" &&
         pausedThenStoppedChild?.externalState === "stopped" &&
         pausedThenStoppedChild.isExternalLive === false &&
-        pausedThenStoppedReloadedList.find((session) => session.sessionId === parent.sessionId)
-          ?.backgroundSubagentRuns === undefined,
+        pausedThenStoppedReloadedList
+          .find((session) => session.sessionId === parent.sessionId)
+          ?.backgroundSubagentRuns?.some(
+            (run) => run.runId === pausedThenStoppedRunId && run.state === "stopped",
+          ) === true,
       `status=${JSON.stringify(persistedStoppedStatus)} child=${JSON.stringify(pausedThenStoppedChild)}`,
     );
     assert(
@@ -761,10 +772,20 @@ async function main(): Promise<void> {
     );
 
     const terminalReloadList = await registry.listSessionsForProject(project.id, project.path);
+    const terminalParentRuns = terminalReloadList.find(
+      (s) => s.sessionId === parent.sessionId,
+    )?.backgroundSubagentRuns;
     assert(
-      "terminal status reload clears every stale parent activity indicator",
-      terminalReloadList.find((s) => s.sessionId === parent.sessionId)?.backgroundSubagentRuns ===
-        undefined,
+      "terminal status reload preserves terminal outcomes without active parent activity",
+      terminalParentRuns !== undefined &&
+        terminalParentRuns.length > 0 &&
+        terminalParentRuns.every(
+          (run) =>
+            run.state === "complete" ||
+            run.state === "failed" ||
+            run.state === "paused" ||
+            run.state === "stopped",
+        ),
       `row=${JSON.stringify(terminalReloadList.find((s) => s.sessionId === parent.sessionId))}`,
     );
 

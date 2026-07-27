@@ -20,7 +20,12 @@ export interface PauseControlInput {
  * remains visible to the parent, but it must never keep an activity spinner.
  */
 export function backgroundSubagentRunCounts(
-  runs: readonly { runId: string; state: "queued" | "running" | "paused" }[] | undefined,
+  runs:
+    | readonly {
+        runId: string;
+        state: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
+      }[]
+    | undefined,
 ): { active: number; paused: number } {
   let active = 0;
   let paused = 0;

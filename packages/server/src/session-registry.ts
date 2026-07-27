@@ -169,11 +169,15 @@ export interface UnifiedSession {
   isExternalLive?: boolean;
   /** Authoritative pi-subagents async status state when known. */
   externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
-  /** Active background runs owned by this parent, including runs whose child JSONL is not visible yet. */
+  /**
+   * Background runs owned by this parent, including status-file-only runs
+   * before child JSONL discovery. Terminal outcomes remain available so an
+   * interrupt card can resolve against its exact run id.
+   */
   backgroundSubagentRuns?: {
     runId: string;
-    /** paused is status.json acknowledgement, never active spinner work. */
-    state: "queued" | "running" | "paused";
+    /** Only queued/running are active spinner work; paused/terminal are lifecycle state. */
+    state: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
   }[];
   /**
    * Absolute path to the session JSONL on disk. Surfaced so the
@@ -2064,19 +2068,17 @@ export async function listSessionsForProject(
   // pi-subagents child sessions. Existing disk-derived parentSessionId wins
   // because those are true child JSONLs whose resume/delete semantics depend
   // on the subdirectory layout.
-  // Status files are created before child session JSONLs. Overlay active
-  // runs onto their stable parent id so the sidebar can show activity during
-  // that discovery gap and reconstruct it after reload/reconnect.
+  // Status files are created before child session JSONLs. Overlay every run
+  // onto its stable parent id so interrupt cards can resolve terminal outcomes
+  // during that discovery gap and after reload/reconnect.
   const externalStatusesByParent = await listExternalSubagentStatusesForParents(
     new Set(liveById.keys()),
   );
   for (const session of liveById.values()) {
-    const parentVisible = (externalStatusesByParent.get(session.sessionId) ?? [])
-      .filter(
-        (status): status is typeof status & { state: "queued" | "running" | "paused" } =>
-          status.state === "queued" || status.state === "running" || status.state === "paused",
-      )
-      .map((status) => ({ runId: status.rootRunId, state: status.state }));
+    const parentVisible = (externalStatusesByParent.get(session.sessionId) ?? []).map((status) => ({
+      runId: status.rootRunId,
+      state: status.state,
+    }));
     if (parentVisible.length > 0) session.backgroundSubagentRuns = parentVisible;
   }
 

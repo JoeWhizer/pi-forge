@@ -15,7 +15,7 @@ function assert(label: string, ok: boolean, detail?: string): void {
 
 const runId = "pause-run";
 const requestedAt = 1_000;
-const parent = (state: "queued" | "running" | "paused") => [
+const parent = (state: "queued" | "running" | "complete" | "failed" | "paused" | "stopped") => [
   {
     sessionId: "parent",
     projectId: "project",
@@ -87,14 +87,7 @@ const terminal = pauseControlState({
   isError: false,
   requestedAt,
   now: requestedAt + 2_000,
-  sessions: [
-    {
-      ...parent("running")[0]!,
-      runId,
-      externalState: "complete",
-      backgroundSubagentRuns: undefined,
-    },
-  ],
+  sessions: parent("complete"),
 });
 assert(
   "completion before a paused acknowledgement is not treated as a successful pause",

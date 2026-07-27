@@ -375,8 +375,11 @@ export interface UnifiedSession {
   isExternalLive?: boolean;
   /** Authoritative pi-subagents async status state when known. */
   externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
-  /** Parent-visible background runs; paused confirms control without active work. */
-  backgroundSubagentRuns?: { runId: string; state: "queued" | "running" | "paused" }[];
+  /** Parent-visible run lifecycle states; only queued/running are active work. */
+  backgroundSubagentRuns?: {
+    runId: string;
+    state: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
+  }[];
   /**
    * Absolute disk path to the session JSONL. Set for disk-discovered
    * sessions; undefined for live-only sessions that haven't flushed

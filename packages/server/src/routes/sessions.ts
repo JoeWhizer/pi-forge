@@ -64,7 +64,7 @@ const unifiedSchema = {
       type: "string",
       enum: ["queued", "running", "complete", "failed", "paused", "stopped"],
     },
-    /** Active runs owned by this parent, even before child JSONL discovery. */
+    /** Parent-owned run lifecycle states, even before child JSONL discovery. */
     backgroundSubagentRuns: {
       type: "array",
       items: {
@@ -72,7 +72,10 @@ const unifiedSchema = {
         required: ["runId", "state"],
         properties: {
           runId: { type: "string" },
-          state: { type: "string", enum: ["queued", "running", "paused"] },
+          state: {
+            type: "string",
+            enum: ["queued", "running", "complete", "failed", "paused", "stopped"],
+          },
         },
       },
     },
