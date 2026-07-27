@@ -84,6 +84,9 @@ export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-run
 const TERMINAL_STATES = new Set<ExternalSubagentState>(["complete", "failed", "paused", "stopped"]);
 const ACTIVE_STATES = new Set<ExternalSubagentState>(["queued", "running"]);
 const deliveredCompletionKeys = new Set<string>();
+// Status files are rewritten repeatedly while a run is active. Remember every
+// delivered state transition so a poll/watch burst creates one sidebar update,
+// while queued → running → terminal transitions still propagate individually.
 const deliveredSessionListKeys = new Set<string>();
 let watcherStarted = false;
 let asyncWatcher: FSWatcher | undefined;
@@ -259,18 +262,24 @@ export function readSessionMessagesFromDisk(
   return manager.buildSessionContext().messages;
 }
 
+function terminalNotificationState(
+  result: AsyncResultFile | undefined,
+  status: ExternalSubagentStatus,
+): "complete" | "failed" | "paused" | "stopped" {
+  if (result?.state === "paused" || status.state === "paused") return "paused";
+  if (result?.state === "stopped" || status.state === "stopped") return "stopped";
+  if (result?.state === "failed" || result?.success === false || status.state === "failed") {
+    return "failed";
+  }
+  return "complete";
+}
+
 function formatCompletionContent(
   result: AsyncResultFile | undefined,
   status: ExternalSubagentStatus,
+  terminalState: ReturnType<typeof terminalNotificationState>,
 ): string {
-  const state =
-    result?.state === "paused" || status.state === "paused"
-      ? "paused"
-      : result?.state === "stopped" || status.state === "stopped"
-        ? "stopped"
-        : result?.success === false || status.state === "failed"
-          ? "failed"
-          : "completed";
+  const state = terminalState === "complete" ? "completed" : terminalState;
   const agent = result?.agent ?? result?.results?.[0]?.agent ?? "subagent";
   const summary =
     result?.summary ??
@@ -357,10 +366,11 @@ export async function deliverExternalSubagentCompletionForRun(root: string): Pro
   if (parentId === undefined) return;
   const live = getSession(parentId);
   if (live === undefined) return;
-  const key = `${parentId}:${root}:${status.state}`;
+  const terminalState = terminalNotificationState(result, status);
+  const key = `${parentId}:${root}:${terminalState}`;
   if (deliveredCompletionKeys.has(key)) return;
-  const content = formatCompletionContent(result, status);
-  if (hasDeliveredCompletionMessage(live.session.messages, root, status.state, content)) {
+  const content = formatCompletionContent(result, status, terminalState);
+  if (hasDeliveredCompletionMessage(live.session.messages, root, terminalState, content)) {
     deliveredCompletionKeys.add(key);
     return;
   }
@@ -370,7 +380,7 @@ export async function deliverExternalSubagentCompletionForRun(root: string): Pro
       customType: "subagent-notify",
       content,
       display: true,
-      details: { source: "pi-subagents", runId: root, state: status.state },
+      details: { source: "pi-subagents", runId: root, state: terminalState },
     },
     { triggerTurn: true },
   );
@@ -384,7 +394,7 @@ export async function deliverExternalSubagentCompletionForRun(root: string): Pro
   }
 }
 
-async function deliverExternalSubagentSessionListChange(root: string): Promise<void> {
+export async function deliverExternalSubagentSessionListChange(root: string): Promise<void> {
   const status = await readStatusByRoot(root);
   if (status === undefined) return;
   const parentId = await sessionIdFromSessionReference(status.parentSessionId);
@@ -392,10 +402,8 @@ async function deliverExternalSubagentSessionListChange(root: string): Promise<v
   const live = getSession(parentId);
   if (live === undefined) return;
   const key = `${parentId}:${root}:${status.state}`;
-  if (TERMINAL_STATES.has(status.state)) {
-    if (deliveredSessionListKeys.has(key)) return;
-    deliveredSessionListKeys.add(key);
-  }
+  if (deliveredSessionListKeys.has(key)) return;
+  deliveredSessionListKeys.add(key);
   for (const c of live.clients) {
     c.send({
       type: "session_list_changed",

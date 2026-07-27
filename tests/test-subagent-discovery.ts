@@ -82,6 +82,7 @@ interface TestLive {
     sessionManager: { appendMessage: (msg: unknown) => string };
   };
   sessionId: string;
+  clients: Set<{ send: (event: unknown) => void }>;
 }
 interface TestDiscovered {
   sessionId: string;
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
     SUBAGENTS_ASYNC_DIR: string;
     SUBAGENTS_RESULTS_DIR: string;
     deliverExternalSubagentCompletionForRun: (runId: string) => Promise<void>;
+    deliverExternalSubagentSessionListChange: (runId: string) => Promise<void>;
   };
 
   // Register the project so findSessionLocation can locate children.
@@ -180,11 +182,19 @@ async function main(): Promise<void> {
     // minimal assistant message so the parent's JSONL header lands on
     // disk and `discoverSessionsOnDisk` can see it.
     appendFixtureMessage(parent, "test fixture");
+    const parentListChanges: Array<{ type?: unknown; reason?: unknown }> = [];
+    parent.clients.add({
+      send: (event) => parentListChanges.push(event as { type?: unknown; reason?: unknown }),
+    });
 
     // 1b. The plugin can create a child before the parent JSONL is visible to
     // disk discovery. The live registry supplies the parent's exact session
     // file identity, so no timestamp/name inference is needed to nest it.
     const delayedParent = await registry.createSession(project.id, project.path);
+    const delayedParentListChanges: Array<{ type?: unknown; reason?: unknown }> = [];
+    delayedParent.clients.add({
+      send: (event) => delayedParentListChanges.push(event as { type?: unknown; reason?: unknown }),
+    });
     const delayedParentFile = delayedParent.session.sessionFile;
     const delayedParentBase =
       typeof delayedParentFile === "string" && delayedParentFile.endsWith(".jsonl")
@@ -222,6 +232,16 @@ async function main(): Promise<void> {
         state: "running",
       }),
       "utf8",
+    );
+    await subagentsExternal.deliverExternalSubagentSessionListChange(preDiscoveryRunId);
+    await subagentsExternal.deliverExternalSubagentSessionListChange(preDiscoveryRunId);
+    assert(
+      "repeated running status emits one parent list update",
+      delayedParentListChanges.filter(
+        (event) =>
+          event.type === "session_list_changed" && event.reason === "subagent_async_running",
+      ).length === 1,
+      `events=${JSON.stringify(delayedParentListChanges)}`,
     );
     const preDiscoveryActiveList = await registry.listSessionsForProject(project.id, project.path);
     const preDiscoveryParent = preDiscoveryActiveList.find(
@@ -474,18 +494,23 @@ async function main(): Promise<void> {
       "utf8",
     );
     await subagentsExternal.deliverExternalSubagentCompletionForRun(runId);
-    const notifyMessage = parent.session.messages?.find(
+    await subagentsExternal.deliverExternalSubagentCompletionForRun(runId);
+    const completeNotifications = (parent.session.messages ?? []).filter(
       (m) =>
         typeof m === "object" &&
         m !== null &&
-        (m as { customType?: unknown }).customType === "subagent-notify",
-    ) as { content?: unknown } | undefined;
+        (m as { customType?: unknown }).customType === "subagent-notify" &&
+        (m as { details?: { runId?: unknown; state?: unknown } }).details?.runId === runId &&
+        (m as { details?: { runId?: unknown; state?: unknown } }).details?.state === "complete",
+    ) as { content?: unknown }[];
+    const notifyMessage = completeNotifications[0];
     assert(
-      "explicit async completion path appends renderable subagent-notify to parent",
-      typeof notifyMessage?.content === "string" &&
+      "complete async notification is renderable and exactly once",
+      completeNotifications.length === 1 &&
+        typeof notifyMessage?.content === "string" &&
         notifyMessage.content.includes("Background task completed") &&
         notifyMessage.content.includes("done"),
-      `message=${JSON.stringify(notifyMessage)}`,
+      `messages=${JSON.stringify(completeNotifications)}`,
     );
 
     const completeList = await registry.listSessionsForProject(project.id, project.path);
@@ -541,6 +566,70 @@ async function main(): Promise<void> {
         sessionFile: childAPath,
       }),
       "utf8",
+    );
+
+    // 6b. Every terminal status clears parent activity after a list reload,
+    // renders one durable notification, and ignores duplicate watcher scans.
+    // These are separate roots so their stable run ids cannot cross-dedupe.
+    for (const terminalState of ["failed", "stopped", "paused"] as const) {
+      const terminalRunId = `${terminalState}-${randomUUID().slice(0, 8)}`;
+      await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, terminalRunId), { recursive: true });
+      await writeFile(
+        join(subagentsExternal.SUBAGENTS_ASYNC_DIR, terminalRunId, "status.json"),
+        JSON.stringify({
+          runId: terminalRunId,
+          sessionId: parent.sessionId,
+          state: terminalState,
+        }),
+        "utf8",
+      );
+      await writeFile(
+        join(subagentsExternal.SUBAGENTS_RESULTS_DIR, `${terminalRunId}.json`),
+        JSON.stringify({
+          runId: terminalRunId,
+          sessionId: parent.sessionId,
+          agent: "reviewer",
+          success: terminalState === "failed" ? false : true,
+          state: terminalState,
+          summary: `${terminalState} fixture`,
+        }),
+        "utf8",
+      );
+      await subagentsExternal.deliverExternalSubagentSessionListChange(terminalRunId);
+      await subagentsExternal.deliverExternalSubagentSessionListChange(terminalRunId);
+      await subagentsExternal.deliverExternalSubagentCompletionForRun(terminalRunId);
+      await subagentsExternal.deliverExternalSubagentCompletionForRun(terminalRunId);
+      const notifications = (parent.session.messages ?? []).filter((message) => {
+        if (typeof message !== "object" || message === null) return false;
+        const details = (message as { details?: unknown }).details;
+        return (
+          typeof details === "object" &&
+          details !== null &&
+          (details as { runId?: unknown; state?: unknown }).runId === terminalRunId &&
+          (details as { runId?: unknown; state?: unknown }).state === terminalState
+        );
+      });
+      assert(
+        `${terminalState} completion notification is durable and exactly once`,
+        notifications.length === 1,
+        `notifications=${JSON.stringify(notifications)}`,
+      );
+      assert(
+        `${terminalState} list update is exactly once`,
+        parentListChanges.filter(
+          (event) =>
+            event.type === "session_list_changed" &&
+            event.reason === `subagent_async_${terminalState}`,
+        ).length === 1,
+        `events=${JSON.stringify(parentListChanges)}`,
+      );
+    }
+    const terminalReloadList = await registry.listSessionsForProject(project.id, project.path);
+    assert(
+      "terminal status reload clears every stale parent activity indicator",
+      terminalReloadList.find((s) => s.sessionId === parent.sessionId)?.backgroundSubagentRuns ===
+        undefined,
+      `row=${JSON.stringify(terminalReloadList.find((s) => s.sessionId === parent.sessionId))}`,
     );
 
     // 7. REALISTIC pi-subagents layout: the plugin's

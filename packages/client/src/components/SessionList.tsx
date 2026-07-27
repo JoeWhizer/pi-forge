@@ -5,7 +5,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { ChevronDown, ChevronRight, LoaderCircle, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, LoaderCircle, X } from "lucide-react";
 import { EMPTY_SESSIONS, useSessionStore } from "../store/session-store";
 import { useProjectStore } from "../store/project-store";
 import { ConfirmDialog } from "./Modal";
@@ -293,6 +293,7 @@ export function SessionList({ projectId }: Props) {
         isActive={s.sessionId === activeSessionId}
         isRunning={streamingBySession[s.sessionId] ?? false}
         isExternalBackgroundLive={s.isExternalLive === true}
+        externalState={s.externalState}
         backgroundChildCount={
           s.backgroundSubagentRuns?.length ?? activeBackgroundDescendantCount.get(s.sessionId) ?? 0
         }
@@ -383,6 +384,8 @@ interface SessionRowProps {
   isRunning: boolean;
   /** This row is a pi-subagents child whose work is running outside Forge's registry. */
   isExternalBackgroundLive: boolean;
+  /** Latest authoritative pi-subagents state for a discovered child. */
+  externalState: UnifiedSession["externalState"];
   /** Active background runs, including pre-discovery parent-owned runs. */
   backgroundChildCount: number;
   hasUnreadResponse: boolean;
@@ -412,6 +415,7 @@ function SessionRow(props: SessionRowProps) {
     isActive,
     isRunning,
     isExternalBackgroundLive,
+    externalState,
     backgroundChildCount,
     hasUnreadResponse,
     isSelected,
@@ -526,7 +530,7 @@ function SessionRow(props: SessionRowProps) {
           {label}
         </button>
       )}
-      {backgroundChildCount > 0 && (
+      {backgroundChildCount > 0 ? (
         <span
           className="inline-flex shrink-0 items-center gap-1 rounded bg-violet-950/50 px-1 py-0.5 text-[9px] font-medium text-violet-300 light:bg-violet-100 light:text-violet-800"
           role="status"
@@ -536,7 +540,36 @@ function SessionRow(props: SessionRowProps) {
           <LoaderCircle size={10} className="animate-spin" aria-hidden="true" />
           {backgroundChildCount} bg
         </span>
-      )}
+      ) : externalState === "complete" ? (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-950/50 px-1 py-0.5 text-[9px] font-medium text-emerald-300 light:bg-emerald-100 light:text-emerald-800"
+          role="status"
+          aria-label="Background subagent completed"
+          title="Background subagent completed"
+        >
+          <Check size={10} aria-hidden="true" />
+          done
+        </span>
+      ) : externalState === "failed" ? (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-red-950/50 px-1 py-0.5 text-[9px] font-medium text-red-300 light:bg-red-100 light:text-red-800"
+          role="status"
+          aria-label="Background subagent failed"
+          title="Background subagent failed"
+        >
+          <X size={10} aria-hidden="true" />
+          failed
+        </span>
+      ) : externalState === "stopped" || externalState === "paused" ? (
+        <span
+          className="inline-flex shrink-0 items-center rounded bg-amber-950/50 px-1 py-0.5 text-[9px] font-medium text-amber-300 light:bg-amber-100 light:text-amber-800"
+          role="status"
+          aria-label={`Background subagent ${externalState}`}
+          title={`Background subagent ${externalState}`}
+        >
+          {externalState}
+        </span>
+      ) : null}
       {!isRenaming && (
         <button
           // data attribute lets the parent's pointerdown handler detect

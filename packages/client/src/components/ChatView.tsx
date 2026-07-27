@@ -2704,15 +2704,55 @@ function SubagentNotify({ message }: { message: AgentMessageLike }) {
     firstLine && firstLine.length > 0
       ? firstLine.replace(/\*\*/g, "")
       : "Background subagent update";
+  const details =
+    typeof message.details === "object" && message.details !== null
+      ? (message.details as Record<string, unknown>)
+      : {};
+  const state =
+    details.state === "complete" ||
+    details.state === "failed" ||
+    details.state === "paused" ||
+    details.state === "stopped"
+      ? details.state
+      : undefined;
+  const tone =
+    state === "complete"
+      ? {
+          card: "border-emerald-700/40 bg-emerald-950/30 text-emerald-100 light:border-emerald-300 light:bg-emerald-50 light:text-emerald-900",
+          summary: "text-emerald-200 light:text-emerald-800",
+          label: "text-emerald-400 light:text-emerald-700",
+          divider: "border-emerald-900/30 light:border-emerald-200",
+        }
+      : state === "failed"
+        ? {
+            card: "border-red-700/40 bg-red-950/30 text-red-100 light:border-red-300 light:bg-red-50 light:text-red-900",
+            summary: "text-red-200 light:text-red-800",
+            label: "text-red-400 light:text-red-700",
+            divider: "border-red-900/30 light:border-red-200",
+          }
+        : {
+            card: "border-amber-700/40 bg-amber-950/30 text-amber-100 light:border-amber-300 light:bg-amber-50 light:text-amber-900",
+            summary: "text-amber-200 light:text-amber-800",
+            label: "text-amber-400 light:text-amber-700",
+            divider: "border-amber-900/30 light:border-amber-200",
+          };
+  const stateLabel = state === "complete" ? "completed" : state;
   return (
-    <details className="rounded border border-amber-700/40 bg-amber-950/30 text-xs text-amber-100 light:border-amber-300 light:bg-amber-50 light:text-amber-900">
-      <summary className="flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-amber-200 light:text-amber-800">
+    <details className={`rounded border ${tone.card} text-xs`}>
+      <summary
+        className={`flex cursor-pointer items-center justify-between gap-2 px-3 py-2 ${tone.summary}`}
+      >
         <span className="flex min-w-0 items-baseline gap-2">
-          <span className="text-amber-400 light:text-amber-700">subagent</span>
+          <span className={tone.label}>subagent</span>
           <span className="truncate text-[11px]">{summary}</span>
         </span>
+        {stateLabel !== undefined && (
+          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide">
+            {stateLabel}
+          </span>
+        )}
       </summary>
-      <div className="border-t border-amber-900/30 px-3 py-2 text-sm light:border-amber-200">
+      <div className={`border-t px-3 py-2 text-sm ${tone.divider}`}>
         <ChatMarkdown text={text} />
       </div>
     </details>
