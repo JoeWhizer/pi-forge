@@ -21,7 +21,7 @@
  * the registry treats any JSONL nested one level deeper than the
  * project session dir as a child.
  */
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -626,6 +626,121 @@ async function main(): Promise<void> {
         `events=${JSON.stringify(lifecycleReasons)}`,
       );
     }
+    // 6c. After an interrupted pi-subagents 0.37 run is explicitly stopped,
+    // its result artifact can retain the earlier paused state while status.json
+    // advances to stopped. Status is authoritative for the persisted/reloaded
+    // sidebar state and terminal parent notification.
+    const pausedThenStoppedRunId = `paused-then-stopped-${randomUUID().slice(0, 8)}`;
+    const pausedThenStoppedChildId = randomUUID();
+    const pausedThenStoppedChildPath = join(
+      projectSessionDir,
+      parent.sessionId,
+      pausedThenStoppedRunId,
+      `${pausedThenStoppedChildId}.jsonl`,
+    );
+    await writeChildSessionFile(pausedThenStoppedChildPath, pausedThenStoppedChildId, project.path);
+    const pausedThenStoppedStatusPath = join(
+      subagentsExternal.SUBAGENTS_ASYNC_DIR,
+      pausedThenStoppedRunId,
+      "status.json",
+    );
+    const pausedThenStoppedEventStart = parentListChanges.length;
+    await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, pausedThenStoppedRunId), {
+      recursive: true,
+    });
+    await writeFile(
+      pausedThenStoppedStatusPath,
+      JSON.stringify({
+        runId: pausedThenStoppedRunId,
+        sessionId: parent.sessionId,
+        state: "paused",
+        sessionFile: pausedThenStoppedChildPath,
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(subagentsExternal.SUBAGENTS_RESULTS_DIR, `${pausedThenStoppedRunId}.json`),
+      JSON.stringify({
+        runId: pausedThenStoppedRunId,
+        sessionId: parent.sessionId,
+        agent: "reviewer",
+        success: false,
+        state: "paused",
+        summary: "paused fixture",
+      }),
+      "utf8",
+    );
+    await subagentsExternal.deliverExternalSubagentSessionListChange(pausedThenStoppedRunId);
+    await subagentsExternal.deliverExternalSubagentCompletionForRun(pausedThenStoppedRunId);
+    await writeFile(
+      pausedThenStoppedStatusPath,
+      JSON.stringify({
+        runId: pausedThenStoppedRunId,
+        sessionId: parent.sessionId,
+        state: "stopped",
+        sessionFile: pausedThenStoppedChildPath,
+      }),
+      "utf8",
+    );
+    await subagentsExternal.deliverExternalSubagentSessionListChange(pausedThenStoppedRunId);
+    await subagentsExternal.deliverExternalSubagentSessionListChange(pausedThenStoppedRunId);
+    await subagentsExternal.deliverExternalSubagentCompletionForRun(pausedThenStoppedRunId);
+    await subagentsExternal.deliverExternalSubagentCompletionForRun(pausedThenStoppedRunId);
+    const persistedStoppedStatus = JSON.parse(
+      await readFile(pausedThenStoppedStatusPath, "utf8"),
+    ) as {
+      state?: unknown;
+    };
+    const pausedThenStoppedReloadedList = await registry.listSessionsForProject(
+      project.id,
+      project.path,
+    );
+    const pausedThenStoppedNotifications = (parent.session.messages ?? []).filter((message) => {
+      if (typeof message !== "object" || message === null) return false;
+      const details = (message as { details?: unknown }).details;
+      return (
+        typeof details === "object" &&
+        details !== null &&
+        (details as { runId?: unknown }).runId === pausedThenStoppedRunId
+      );
+    }) as { content?: unknown; details?: { state?: unknown } }[];
+    const pausedThenStoppedReasons = parentListChanges
+      .slice(pausedThenStoppedEventStart)
+      .filter((event) => event.type === "session_list_changed")
+      .map((event) => event.reason);
+    const pausedThenStoppedChild = pausedThenStoppedReloadedList.find(
+      (session) => session.sessionId === pausedThenStoppedChildId,
+    );
+    assert(
+      "paused then stopped persists stopped as the authoritative reloaded child state",
+      persistedStoppedStatus.state === "stopped" &&
+        pausedThenStoppedChild?.externalState === "stopped" &&
+        pausedThenStoppedChild.isExternalLive === false &&
+        pausedThenStoppedReloadedList.find((session) => session.sessionId === parent.sessionId)
+          ?.backgroundSubagentRuns === undefined,
+      `status=${JSON.stringify(persistedStoppedStatus)} child=${JSON.stringify(pausedThenStoppedChild)}`,
+    );
+    assert(
+      "paused then stopped emits each parent/sidebar lifecycle transition exactly once",
+      JSON.stringify(pausedThenStoppedReasons) ===
+        JSON.stringify(["subagent_async_paused", "subagent_async_stopped"]),
+      `events=${JSON.stringify(pausedThenStoppedReasons)}`,
+    );
+    assert(
+      "paused then stopped emits one correctly labeled stopped notification despite stale paused result",
+      pausedThenStoppedNotifications.filter((message) => message.details?.state === "paused")
+        .length === 1 &&
+        pausedThenStoppedNotifications.filter((message) => message.details?.state === "stopped")
+          .length === 1 &&
+        pausedThenStoppedNotifications.some(
+          (message) =>
+            message.details?.state === "stopped" &&
+            typeof message.content === "string" &&
+            message.content.includes("Background task stopped"),
+        ),
+      `notifications=${JSON.stringify(pausedThenStoppedNotifications)}`,
+    );
+
     const terminalReloadList = await registry.listSessionsForProject(project.id, project.path);
     assert(
       "terminal status reload clears every stale parent activity indicator",

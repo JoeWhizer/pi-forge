@@ -263,14 +263,12 @@ export function readSessionMessagesFromDisk(
 }
 
 function terminalNotificationState(
-  result: AsyncResultFile | undefined,
   status: ExternalSubagentStatus,
 ): "complete" | "failed" | "paused" | "stopped" {
-  if (result?.state === "paused" || status.state === "paused") return "paused";
-  if (result?.state === "stopped" || status.state === "stopped") return "stopped";
-  if (result?.state === "failed" || result?.success === false || status.state === "failed") {
-    return "failed";
-  }
+  // status.json is the lifecycle authority. In particular, a stop can follow
+  // a pause while the result artifact still reports its earlier paused state.
+  if (status.state === "paused" || status.state === "stopped") return status.state;
+  if (status.state === "failed") return "failed";
   return "complete";
 }
 
@@ -366,7 +364,7 @@ export async function deliverExternalSubagentCompletionForRun(root: string): Pro
   if (parentId === undefined) return;
   const live = getSession(parentId);
   if (live === undefined) return;
-  const terminalState = terminalNotificationState(result, status);
+  const terminalState = terminalNotificationState(status);
   const key = `${parentId}:${root}:${terminalState}`;
   if (deliveredCompletionKeys.has(key)) return;
   const content = formatCompletionContent(result, status, terminalState);
