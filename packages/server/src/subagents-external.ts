@@ -119,7 +119,17 @@ async function readStatusByRoot(root: string): Promise<ExternalSubagentStatus | 
     statusPath,
   };
   if (existsSync(resultPath)) out.resultPath = resultPath;
-  if (typeof status.sessionId === "string") out.parentSessionId = status.sessionId;
+  if (typeof status.sessionId === "string") {
+    // pi-subagents 0.37 can persist the parent session *file* here instead
+    // of its UUID. Resolve that exact file header before exposing topology to
+    // the client; a bare id remains valid across reloads when the parent is
+    // no longer live.
+    const parentId = await sessionIdFromSessionReference(status.sessionId);
+    if (parentId !== undefined) out.parentSessionId = parentId;
+    else if (!status.sessionId.includes("/") && !status.sessionId.includes("\\")) {
+      out.parentSessionId = status.sessionId;
+    }
+  }
   if (typeof status.sessionFile === "string") out.sessionFile = status.sessionFile;
   return out;
 }

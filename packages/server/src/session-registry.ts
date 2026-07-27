@@ -1537,6 +1537,23 @@ async function discoverSessionsOnDiskUncached(
   for (const info of infos) {
     const base = basenameNoExt(info.path);
     if (base !== undefined) basenameToParentId.set(base, info.id);
+    // Older pi-subagents layouts use the raw session id as the child-root
+    // directory. This is still an exact id from the JSONL header, not a
+    // display-name or timestamp heuristic.
+    basenameToParentId.set(info.id, info.id);
+  }
+  // A child can be written before its parent JSONL is visible to the disk
+  // scanner. Live sessions provide the same exact parent-file identity, so
+  // use that stable path → id relation instead of deriving an id from the
+  // timestamped directory name.
+  for (const live of listSessions(projectId)) {
+    const sessionFile = live.session.sessionFile;
+    // Older layouts can use this exact id directly even before the parent
+    // has flushed a discoverable JSONL.
+    basenameToParentId.set(live.sessionId, live.sessionId);
+    if (sessionFile === undefined) continue;
+    const base = basenameNoExt(sessionFile);
+    if (base !== undefined) basenameToParentId.set(base, live.sessionId);
   }
   const children = await discoverSubagentChildSessions(workspacePath, dir, basenameToParentId);
   for (const child of children) out.push(child);
@@ -1624,7 +1641,12 @@ async function discoverSubagentChildSessions(
     // parent-named child roots.
     if (dirName === "subagent-artifacts") continue;
 
-    const parentSessionId = basenameToParentId.get(dirName) ?? dirName;
+    // Do not treat the parent directory name as an id. Modern pi-subagents
+    // names it after the parent's timestamped filename, and a child can
+    // arrive before that parent filename is discoverable. The map is built
+    // from exact disk/live session-file identities; async status metadata can
+    // supply the parent later when this relation is not yet available.
+    const parentSessionId = basenameToParentId.get(dirName);
     const parentDir = join(dir, dirName);
 
     // Recursively find every dir containing .jsonl files under
@@ -1656,8 +1678,8 @@ async function discoverSubagentChildSessions(
           modifiedAt: info.modified,
           messageCount: info.messageCount,
           firstMessage: info.firstMessage,
-          parentSessionId,
         };
+        if (parentSessionId !== undefined) ds.parentSessionId = parentSessionId;
         if (info.name !== undefined) ds.name = info.name;
         if (runId !== undefined) ds.runId = runId;
         out.push(ds);
@@ -1750,6 +1772,11 @@ export async function listSessionsForProject(
       if (d.runId !== undefined) merged.runId = d.runId;
       const external = await getExternalSubagentStatusForSession({ runId: d.runId, path: d.path });
       if (external !== undefined) {
+        // status.json is emitted by pi-subagents with the exact originating
+        // session id. It remains authoritative when child discovery preceded
+        // the parent JSONL, including after a background run has completed.
+        if (external.parentSessionId !== undefined)
+          merged.parentSessionId = external.parentSessionId;
         merged.externalState = external.state;
         merged.isExternalLive = external.isExternalLive;
       }
@@ -1772,6 +1799,9 @@ export async function listSessionsForProject(
     if (d.runId !== undefined) u.runId = d.runId;
     const external = await getExternalSubagentStatusForSession({ runId: d.runId, path: d.path });
     if (external !== undefined) {
+      // See the corresponding live-session merge above. The status-derived
+      // parent link also survives a reload/restart where no parent is live.
+      if (external.parentSessionId !== undefined) u.parentSessionId = external.parentSessionId;
       u.externalState = external.state;
       u.isExternalLive = external.isExternalLive;
     }

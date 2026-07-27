@@ -23,7 +23,7 @@
  */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -180,6 +180,32 @@ async function main(): Promise<void> {
     // disk and `discoverSessionsOnDisk` can see it.
     appendFixtureMessage(parent, "test fixture");
 
+    // 1b. The plugin can create a child before the parent JSONL is visible to
+    // disk discovery. The live registry supplies the parent's exact session
+    // file identity, so no timestamp/name inference is needed to nest it.
+    const delayedParent = await registry.createSession(project.id, project.path);
+    const delayedParentFile = delayedParent.session.sessionFile;
+    const delayedParentBase =
+      typeof delayedParentFile === "string" && delayedParentFile.endsWith(".jsonl")
+        ? basename(delayedParentFile, ".jsonl")
+        : undefined;
+    const delayedChild = randomUUID();
+    if (delayedParentBase !== undefined) {
+      await writeChildSessionFile(
+        join(sessionDir, project.id, delayedParentBase, "foreground-run", `${delayedChild}.jsonl`),
+        delayedChild,
+        project.path,
+      );
+    }
+    const delayedDiscovery = await registry.discoverSessionsOnDisk(project.id, project.path);
+    const delayedChildEntry = delayedDiscovery.find((s) => s.sessionId === delayedChild);
+    assert(
+      "foreground child remains nested when discovered before parent JSONL",
+      delayedParentBase !== undefined &&
+        delayedChildEntry?.parentSessionId === delayedParent.sessionId,
+      `parentSessionId=${delayedChildEntry?.parentSessionId} expected=${delayedParent.sessionId}`,
+    );
+
     // 2. Fake a pi-subagents child JSONL nested under the parent's id.
     //    Layout: <sessionDir>/<projectId>/<parentId>/<runId>/<childId>.jsonl
     const runId = "run-" + randomUUID().slice(0, 8);
@@ -191,14 +217,75 @@ async function main(): Promise<void> {
     await writeChildSessionFile(childAPath, childA, project.path);
     await writeChildSessionFile(childBPath, childB, project.path);
 
+    // A completed async status may be observed before its parent JSONL is
+    // discoverable (for example after a server restart). Its exact sessionId
+    // must preserve the child link until the parent row arrives.
+    const completedBeforeParentId = randomUUID();
+    const completedBeforeParentChildId = randomUUID();
+    const completedBeforeParentRunId = `complete-${randomUUID().slice(0, 8)}`;
+    const completedBeforeParentChildPath = join(
+      projectSessionDir,
+      completedBeforeParentId,
+      completedBeforeParentRunId,
+      "run-0",
+      `${completedBeforeParentChildId}.jsonl`,
+    );
+    await writeChildSessionFile(
+      completedBeforeParentChildPath,
+      completedBeforeParentChildId,
+      project.path,
+    );
+    await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, completedBeforeParentRunId), {
+      recursive: true,
+    });
+    await writeFile(
+      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, completedBeforeParentRunId, "status.json"),
+      JSON.stringify({
+        runId: completedBeforeParentRunId,
+        sessionId: completedBeforeParentId,
+        state: "complete",
+        sessionFile: completedBeforeParentChildPath,
+      }),
+      "utf8",
+    );
+    const completionBeforeParentList = await registry.listSessionsForProject(
+      project.id,
+      project.path,
+    );
+    const completionBeforeParentChild = completionBeforeParentList.find(
+      (s) => s.sessionId === completedBeforeParentChildId,
+    );
+    assert(
+      "completion-before-parent-discovery retains the status-provided parent id",
+      completionBeforeParentChild?.parentSessionId === completedBeforeParentId &&
+        completionBeforeParentChild.isExternalLive === false &&
+        completionBeforeParentChild.externalState === "complete",
+      `row=${JSON.stringify(completionBeforeParentChild)}`,
+    );
+    await writeChildSessionFile(
+      join(projectSessionDir, `${completedBeforeParentId}.jsonl`),
+      completedBeforeParentId,
+      project.path,
+    );
+    const completionAfterParentList = await registry.listSessionsForProject(
+      project.id,
+      project.path,
+    );
+    assert(
+      "completed child remains nested after its delayed parent is discovered",
+      completionAfterParentList.some((s) => s.sessionId === completedBeforeParentId) &&
+        completionAfterParentList.find((s) => s.sessionId === completedBeforeParentChildId)
+          ?.parentSessionId === completedBeforeParentId,
+    );
+
     // 3. discoverSessionsOnDisk surfaces the parent AND both children.
     const discovered = await registry.discoverSessionsOnDisk(project.id, project.path);
-    const ids = discovered.map((d) => d.sessionId).sort();
-    const expectedIds = [parent.sessionId, childA, childB].sort();
+    const ids = discovered.map((d) => d.sessionId);
+    const expectedIds = [parent.sessionId, childA, childB];
     assert(
       "discoverSessionsOnDisk includes parent + 2 children",
-      JSON.stringify(ids) === JSON.stringify(expectedIds),
-      `got ${ids.join(",")} expected ${expectedIds.join(",")}`,
+      expectedIds.every((id) => ids.includes(id)),
+      `got ${ids.join(",")} expected at least ${expectedIds.join(",")}`,
     );
 
     const childAEntry = discovered.find((d) => d.sessionId === childA);
@@ -270,20 +357,31 @@ async function main(): Promise<void> {
       join(subagentsExternal.SUBAGENTS_ASYNC_DIR, runId, "status.json"),
       JSON.stringify({
         runId,
-        sessionId: parent.sessionId,
+        sessionId: parent.session.sessionFile ?? parent.sessionId,
         state: "running",
         sessionFile: childAPath,
+        steps: [{ sessionFile: childAPath }, { sessionFile: childBPath }],
       }),
       "utf8",
     );
     const activeList = await registry.listSessionsForProject(project.id, project.path);
     const activeChild = activeList.find((s) => s.sessionId === childA);
+    const activeChildB = activeList.find((s) => s.sessionId === childB);
     assert(
       "running pi-subagents child isExternalLive=true but isLive=false",
       activeChild?.isExternalLive === true &&
         activeChild?.isLive === false &&
         activeChild.externalState === "running",
       `row=${JSON.stringify(activeChild)}`,
+    );
+    assert(
+      "multiple background children share parent activity and remain nested",
+      activeChildB?.isExternalLive === true &&
+        activeChildB.parentSessionId === parent.sessionId &&
+        activeList.filter(
+          (s) => s.parentSessionId === parent.sessionId && s.isExternalLive === true,
+        ).length === 2,
+      `childB=${JSON.stringify(activeChildB)}`,
     );
     try {
       await registry.resumeSession(childA, project.id, project.path);
@@ -303,7 +401,7 @@ async function main(): Promise<void> {
       join(subagentsExternal.SUBAGENTS_ASYNC_DIR, runId, "status.json"),
       JSON.stringify({
         runId,
-        sessionId: parent.sessionId,
+        sessionId: parent.session.sessionFile ?? parent.sessionId,
         state: "complete",
         sessionFile: childAPath,
       }),
@@ -352,8 +450,10 @@ async function main(): Promise<void> {
     const completeList = await registry.listSessionsForProject(project.id, project.path);
     const completeChild = completeList.find((s) => s.sessionId === childA);
     assert(
-      "terminal pi-subagents status clears isExternalLive",
-      completeChild?.isExternalLive === false && completeChild.externalState === "complete",
+      "completion-before-discovery status clears activity but preserves the parent link",
+      completeChild?.isExternalLive === false &&
+        completeChild.externalState === "complete" &&
+        completeChild.parentSessionId === parent.sessionId,
       `row=${JSON.stringify(completeChild)}`,
     );
 
@@ -369,7 +469,7 @@ async function main(): Promise<void> {
       join(subagentsExternal.SUBAGENTS_ASYNC_DIR, runId, "status.json"),
       JSON.stringify({
         runId,
-        sessionId: parent.sessionId,
+        sessionId: parent.session.sessionFile ?? parent.sessionId,
         state: "running",
         sessionFile: childAPath,
       }),
@@ -395,7 +495,7 @@ async function main(): Promise<void> {
       join(subagentsExternal.SUBAGENTS_ASYNC_DIR, runId, "status.json"),
       JSON.stringify({
         runId,
-        sessionId: parent.sessionId,
+        sessionId: parent.session.sessionFile ?? parent.sessionId,
         state: "complete",
         sessionFile: childAPath,
       }),

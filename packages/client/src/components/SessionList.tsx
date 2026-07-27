@@ -161,7 +161,7 @@ export function SessionList({ projectId }: Props) {
    * the parent was deleted — fall back to top-level rendering so they
    * don't disappear from the sidebar entirely.
    */
-  const { topLevel, childrenByParent } = useMemo(() => {
+  const { topLevel, childrenByParent, activeBackgroundDescendantCount } = useMemo(() => {
     const childrenByParent = new Map<string, UnifiedSession[]>();
     const allIds = new Set(sessions.map((s) => s.sessionId));
     for (const s of sessions) {
@@ -199,7 +199,24 @@ export function SessionList({ projectId }: Props) {
         bucketed: Array.from(childrenByParent.keys()),
       });
     }
-    return { topLevel, childrenByParent };
+    // Show each parent the aggregate of active background descendants. A
+    // recursive count covers a background child that itself owns children
+    // while the visited set keeps malformed cycles from affecting rendering.
+    const activeBackgroundDescendantCount = new Map<string, number>();
+    const countActiveBackgroundDescendants = (parentId: string, visited: Set<string>): number => {
+      if (visited.has(parentId)) return 0;
+      visited.add(parentId);
+      let count = 0;
+      for (const child of childrenByParent.get(parentId) ?? []) {
+        if (child.isExternalLive === true) count += 1;
+        count += countActiveBackgroundDescendants(child.sessionId, visited);
+      }
+      visited.delete(parentId);
+      if (count > 0) activeBackgroundDescendantCount.set(parentId, count);
+      return count;
+    };
+    for (const session of sessions) countActiveBackgroundDescendants(session.sessionId, new Set());
+    return { topLevel, childrenByParent, activeBackgroundDescendantCount };
   }, [sessions, projectId]);
 
   const submitDelete = async (): Promise<void> => {
@@ -275,6 +292,8 @@ export function SessionList({ projectId }: Props) {
         session={s}
         isActive={s.sessionId === activeSessionId}
         isRunning={streamingBySession[s.sessionId] ?? false}
+        isExternalBackgroundLive={s.isExternalLive === true}
+        backgroundChildCount={activeBackgroundDescendantCount.get(s.sessionId) ?? 0}
         hasUnreadResponse={unreadResponseBySession[s.sessionId] ?? false}
         isSelected={selectedIds.has(s.sessionId)}
         isRenaming={renamingId === s.sessionId}
@@ -360,6 +379,10 @@ interface SessionRowProps {
   session: UnifiedSession;
   isActive: boolean;
   isRunning: boolean;
+  /** This row is a pi-subagents child whose work is running outside Forge's registry. */
+  isExternalBackgroundLive: boolean;
+  /** Active external children below this row, including nested descendants. */
+  backgroundChildCount: number;
   hasUnreadResponse: boolean;
   isSelected: boolean;
   isRenaming: boolean;
@@ -386,6 +409,8 @@ function SessionRow(props: SessionRowProps) {
     session: s,
     isActive,
     isRunning,
+    isExternalBackgroundLive,
+    backgroundChildCount,
     hasUnreadResponse,
     isSelected,
     isRenaming,
@@ -440,7 +465,14 @@ function SessionRow(props: SessionRowProps) {
       ) : (
         <span className="inline-block h-4 w-4 shrink-0" aria-hidden="true" />
       )}
-      {isRunning ? (
+      {isExternalBackgroundLive ? (
+        <LoaderCircle
+          size={12}
+          className="shrink-0 animate-spin text-violet-400"
+          role="status"
+          aria-label="Background subagent is working"
+        />
+      ) : isRunning ? (
         <LoaderCircle
           size={12}
           className="shrink-0 animate-spin text-cyan-400"
@@ -491,6 +523,17 @@ function SessionRow(props: SessionRowProps) {
           )}
           {label}
         </button>
+      )}
+      {backgroundChildCount > 0 && (
+        <span
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-violet-950/50 px-1 py-0.5 text-[9px] font-medium text-violet-300 light:bg-violet-100 light:text-violet-800"
+          role="status"
+          aria-label={`${backgroundChildCount} background subagent${backgroundChildCount === 1 ? "" : "s"} working`}
+          title={`${backgroundChildCount} background subagent${backgroundChildCount === 1 ? "" : "s"} working`}
+        >
+          <LoaderCircle size={10} className="animate-spin" aria-hidden="true" />
+          {backgroundChildCount} bg
+        </span>
       )}
       {!isRenaming && (
         <button

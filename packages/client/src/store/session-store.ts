@@ -1008,6 +1008,15 @@ function applyEvent(
     // would otherwise stick around indefinitely.
     const hasSnapshotName = Object.prototype.hasOwnProperty.call(event, "name");
     const snapshotName = typeof event.name === "string" ? event.name : undefined;
+    const snapshotProjectId =
+      typeof event.projectId === "string"
+        ? event.projectId
+        : findProjectIdForSession(get(), sessionId);
+    // Reconnect snapshots are the one signal guaranteed after a browser was
+    // offline while pi-subagents started or completed. Refresh the server's
+    // status-backed session list so parent activity aggregates cannot remain
+    // stale until another tool event happens.
+    if (snapshotProjectId !== undefined) scheduleSessionListRefresh(get, snapshotProjectId);
     set((s) => ({
       ...(hasSnapshotName ? renameSessionInLists(s, sessionId, snapshotName) : {}),
       messagesBySession: {
