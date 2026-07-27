@@ -60,7 +60,10 @@ const unifiedSchema = {
     /** pi-subagents run id when this is a child session. */
     runId: { type: "string" },
     isExternalLive: { type: "boolean" },
-    externalState: { type: "string", enum: ["queued", "running", "complete", "failed", "paused"] },
+    externalState: {
+      type: "string",
+      enum: ["queued", "running", "complete", "failed", "paused", "stopped"],
+    },
     /**
      * Absolute disk path to the session JSONL — used by the
      * SubagentResultCard to resolve a result's `sessionFile` reference

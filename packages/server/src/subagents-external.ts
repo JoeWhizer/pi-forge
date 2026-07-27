@@ -6,7 +6,13 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getSession } from "./session-registry.js";
 
-export type ExternalSubagentState = "queued" | "running" | "complete" | "failed" | "paused";
+export type ExternalSubagentState =
+  | "queued"
+  | "running"
+  | "complete"
+  | "failed"
+  | "paused"
+  | "stopped";
 
 export interface ExternalSubagentStatus {
   runId: string;
@@ -75,7 +81,7 @@ export const SUBAGENTS_TEMP_ROOT = join(os.tmpdir(), `pi-subagents-${resolveTemp
 export const SUBAGENTS_RESULTS_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-results");
 export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-runs");
 
-const TERMINAL_STATES = new Set<ExternalSubagentState>(["complete", "failed", "paused"]);
+const TERMINAL_STATES = new Set<ExternalSubagentState>(["complete", "failed", "paused", "stopped"]);
 const ACTIVE_STATES = new Set<ExternalSubagentState>(["queued", "running"]);
 const deliveredCompletionKeys = new Set<string>();
 const deliveredSessionListKeys = new Set<string>();
@@ -94,7 +100,8 @@ function isExternalState(value: unknown): value is ExternalSubagentState {
     value === "running" ||
     value === "complete" ||
     value === "failed" ||
-    value === "paused"
+    value === "paused" ||
+    value === "stopped"
   );
 }
 
@@ -230,9 +237,11 @@ function formatCompletionContent(
   const state =
     result?.state === "paused" || status.state === "paused"
       ? "paused"
-      : result?.success === false || status.state === "failed"
-        ? "failed"
-        : "completed";
+      : result?.state === "stopped" || status.state === "stopped"
+        ? "stopped"
+        : result?.success === false || status.state === "failed"
+          ? "failed"
+          : "completed";
   const agent = result?.agent ?? result?.results?.[0]?.agent ?? "subagent";
   const summary =
     result?.summary ??

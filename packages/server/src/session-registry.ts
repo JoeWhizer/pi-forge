@@ -129,7 +129,7 @@ export interface DiscoveredSession {
   /** True when pi-subagents authoritative status says this child is queued/running externally. */
   isExternalLive?: boolean;
   /** Authoritative pi-subagents async status state when known. */
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
 }
 
 /**
@@ -159,7 +159,7 @@ export interface UnifiedSession {
   /** True when pi-subagents authoritative status says this child is queued/running externally. */
   isExternalLive?: boolean;
   /** Authoritative pi-subagents async status state when known. */
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
   /**
    * Absolute path to the session JSONL on disk. Surfaced so the
    * client can resolve a `sessionFile` reference (e.g. from a

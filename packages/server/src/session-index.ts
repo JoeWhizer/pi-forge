@@ -25,7 +25,7 @@ export interface IndexedSession {
   parentSessionId?: string;
   runId?: string;
   isExternalLive?: boolean;
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
 }
 
 interface PersistedSession {
@@ -39,7 +39,7 @@ interface PersistedSession {
   parentSessionId?: string;
   runId?: string;
   isExternalLive?: boolean;
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
 }
 
 interface PersistedProjectIndex {
@@ -82,7 +82,8 @@ function isExternalState(value: unknown): value is NonNullable<IndexedSession["e
     value === "running" ||
     value === "complete" ||
     value === "failed" ||
-    value === "paused"
+    value === "paused" ||
+    value === "stopped"
   );
 }
 

@@ -388,7 +388,8 @@ function vUnifiedSession(value: unknown, status: number): UnifiedSession {
     value.externalState === "running" ||
     value.externalState === "complete" ||
     value.externalState === "failed" ||
-    value.externalState === "paused"
+    value.externalState === "paused" ||
+    value.externalState === "stopped"
   ) {
     out.externalState = value.externalState;
   }

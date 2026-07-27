@@ -34,7 +34,10 @@ import { searchRoutes } from "./routes/search.js";
 import { terminalRoutes } from "./routes/terminal.js";
 import { disposeAll as disposeAllMcp, loadGlobal as loadGlobalMcp } from "./mcp/manager.js";
 import { initAskUserQuestionFanout, initProcessesFanout, initTodoFanout } from "./sse-bridge.js";
-import { startExternalSubagentsWatcher } from "./subagents-external.js";
+import {
+  startExternalSubagentsWatcher,
+  stopExternalSubagentsWatcher,
+} from "./subagents-external.js";
 import { webhookRoutes } from "./routes/webhooks.js";
 import { initAskUserQuestionWebhookBridge, initProcessesWebhookBridge } from "./webhooks/init.js";
 import { orchestrationRoutes } from "./routes/orchestration.js";
@@ -525,6 +528,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   // tests via `await fastify.close()`). Disposes every live session, which
   // will also become load-bearing in Phase 5 to flush SSE clients.
   fastify.addHook("onClose", async () => {
+    stopExternalSubagentsWatcher();
     await disposeAllSessions();
     disposeAllPtys();
     await disposeAllMcp();

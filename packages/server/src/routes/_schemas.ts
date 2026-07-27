@@ -65,7 +65,10 @@ export const liveSummarySchema = {
     modelProvider: { type: "string" },
     modelId: { type: "string" },
     isExternalLive: { type: "boolean" },
-    externalState: { type: "string", enum: ["queued", "running", "complete", "failed", "paused"] },
+    externalState: {
+      type: "string",
+      enum: ["queued", "running", "complete", "failed", "paused", "stopped"],
+    },
   },
 } as const;
 
@@ -95,7 +98,7 @@ export function liveSummaryBody(args: {
   modelProvider?: string | undefined;
   modelId?: string | undefined;
   isExternalLive?: boolean;
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
 }): Record<string, unknown> {
   const out: Record<string, unknown> = {
     sessionId: args.sessionId,

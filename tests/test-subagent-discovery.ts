@@ -95,7 +95,7 @@ interface TestUnifiedSession {
   runId?: string;
   isLive?: boolean;
   isExternalLive?: boolean;
-  externalState?: "queued" | "running" | "complete" | "failed" | "paused";
+  externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
 }
 interface TestRegistry {
   createSession: (projectId: string, workspacePath: string) => Promise<TestLive>;
@@ -217,65 +217,59 @@ async function main(): Promise<void> {
     await writeChildSessionFile(childAPath, childA, project.path);
     await writeChildSessionFile(childBPath, childB, project.path);
 
-    // A completed async status may be observed before its parent JSONL is
-    // discoverable (for example after a server restart). Its exact sessionId
-    // must preserve the child link until the parent row arrives.
-    const completedBeforeParentId = randomUUID();
-    const completedBeforeParentChildId = randomUUID();
-    const completedBeforeParentRunId = `complete-${randomUUID().slice(0, 8)}`;
-    const completedBeforeParentChildPath = join(
+    // A stopped async status may be observed before its parent JSONL is
+    // discoverable (for example after cancellation during a server restart).
+    // Its exact sessionId must preserve the child link until the parent row arrives.
+    const stoppedBeforeParentId = randomUUID();
+    const stoppedBeforeParentChildId = randomUUID();
+    const stoppedBeforeParentRunId = `stopped-${randomUUID().slice(0, 8)}`;
+    const stoppedBeforeParentChildPath = join(
       projectSessionDir,
-      completedBeforeParentId,
-      completedBeforeParentRunId,
+      stoppedBeforeParentId,
+      stoppedBeforeParentRunId,
       "run-0",
-      `${completedBeforeParentChildId}.jsonl`,
+      `${stoppedBeforeParentChildId}.jsonl`,
     );
     await writeChildSessionFile(
-      completedBeforeParentChildPath,
-      completedBeforeParentChildId,
+      stoppedBeforeParentChildPath,
+      stoppedBeforeParentChildId,
       project.path,
     );
-    await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, completedBeforeParentRunId), {
+    await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, stoppedBeforeParentRunId), {
       recursive: true,
     });
     await writeFile(
-      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, completedBeforeParentRunId, "status.json"),
+      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, stoppedBeforeParentRunId, "status.json"),
       JSON.stringify({
-        runId: completedBeforeParentRunId,
-        sessionId: completedBeforeParentId,
-        state: "complete",
-        sessionFile: completedBeforeParentChildPath,
+        runId: stoppedBeforeParentRunId,
+        sessionId: stoppedBeforeParentId,
+        state: "stopped",
+        sessionFile: stoppedBeforeParentChildPath,
       }),
       "utf8",
     );
-    const completionBeforeParentList = await registry.listSessionsForProject(
-      project.id,
-      project.path,
-    );
-    const completionBeforeParentChild = completionBeforeParentList.find(
-      (s) => s.sessionId === completedBeforeParentChildId,
+    const stoppedBeforeParentList = await registry.listSessionsForProject(project.id, project.path);
+    const stoppedBeforeParentChild = stoppedBeforeParentList.find(
+      (s) => s.sessionId === stoppedBeforeParentChildId,
     );
     assert(
-      "completion-before-parent-discovery retains the status-provided parent id",
-      completionBeforeParentChild?.parentSessionId === completedBeforeParentId &&
-        completionBeforeParentChild.isExternalLive === false &&
-        completionBeforeParentChild.externalState === "complete",
-      `row=${JSON.stringify(completionBeforeParentChild)}`,
+      "stopped status clears background activity and retains the parent before discovery",
+      stoppedBeforeParentChild?.parentSessionId === stoppedBeforeParentId &&
+        stoppedBeforeParentChild.isExternalLive === false &&
+        stoppedBeforeParentChild.externalState === "stopped",
+      `row=${JSON.stringify(stoppedBeforeParentChild)}`,
     );
     await writeChildSessionFile(
-      join(projectSessionDir, `${completedBeforeParentId}.jsonl`),
-      completedBeforeParentId,
+      join(projectSessionDir, `${stoppedBeforeParentId}.jsonl`),
+      stoppedBeforeParentId,
       project.path,
     );
-    const completionAfterParentList = await registry.listSessionsForProject(
-      project.id,
-      project.path,
-    );
+    const stoppedAfterParentList = await registry.listSessionsForProject(project.id, project.path);
     assert(
-      "completed child remains nested after its delayed parent is discovered",
-      completionAfterParentList.some((s) => s.sessionId === completedBeforeParentId) &&
-        completionAfterParentList.find((s) => s.sessionId === completedBeforeParentChildId)
-          ?.parentSessionId === completedBeforeParentId,
+      "stopped child remains nested after its delayed parent is discovered",
+      stoppedAfterParentList.some((s) => s.sessionId === stoppedBeforeParentId) &&
+        stoppedAfterParentList.find((s) => s.sessionId === stoppedBeforeParentChildId)
+          ?.parentSessionId === stoppedBeforeParentId,
     );
 
     // 3. discoverSessionsOnDisk surfaces the parent AND both children.
