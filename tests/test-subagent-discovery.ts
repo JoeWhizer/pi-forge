@@ -96,6 +96,7 @@ interface TestUnifiedSession {
   isLive?: boolean;
   isExternalLive?: boolean;
   externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
+  backgroundSubagentRuns?: { runId: string; state: "queued" | "running" }[];
 }
 interface TestRegistry {
   createSession: (projectId: string, workspacePath: string) => Promise<TestLive>;
@@ -204,6 +205,52 @@ async function main(): Promise<void> {
       delayedParentBase !== undefined &&
         delayedChildEntry?.parentSessionId === delayedParent.sessionId,
       `parentSessionId=${delayedChildEntry?.parentSessionId} expected=${delayedParent.sessionId}`,
+    );
+
+    // The async launch receipt/status exists before pi-subagents writes a
+    // discoverable child JSONL. The parent must expose this stable run id so
+    // the sidebar can render activity immediately, including after reconnect.
+    const preDiscoveryRunId = `pre-discovery-${randomUUID().slice(0, 8)}`;
+    await mkdir(join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId), {
+      recursive: true,
+    });
+    await writeFile(
+      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId, "status.json"),
+      JSON.stringify({
+        runId: preDiscoveryRunId,
+        sessionId: delayedParent.sessionId,
+        state: "running",
+      }),
+      "utf8",
+    );
+    const preDiscoveryActiveList = await registry.listSessionsForProject(project.id, project.path);
+    const preDiscoveryParent = preDiscoveryActiveList.find(
+      (s) => s.sessionId === delayedParent.sessionId,
+    );
+    assert(
+      "parent exposes running background run before child discovery",
+      preDiscoveryParent?.backgroundSubagentRuns?.some(
+        (run) => run.runId === preDiscoveryRunId && run.state === "running",
+      ) === true,
+      `row=${JSON.stringify(preDiscoveryParent)}`,
+    );
+    await writeFile(
+      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId, "status.json"),
+      JSON.stringify({
+        runId: preDiscoveryRunId,
+        sessionId: delayedParent.sessionId,
+        state: "complete",
+      }),
+      "utf8",
+    );
+    const preDiscoveryTerminalList = await registry.listSessionsForProject(
+      project.id,
+      project.path,
+    );
+    assert(
+      "terminal background status clears parent activity before child discovery",
+      preDiscoveryTerminalList.find((s) => s.sessionId === delayedParent.sessionId)
+        ?.backgroundSubagentRuns === undefined,
     );
 
     // 2. Fake a pi-subagents child JSONL nested under the parent's id.

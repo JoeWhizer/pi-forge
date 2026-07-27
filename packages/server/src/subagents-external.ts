@@ -1,5 +1,5 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as os from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -113,9 +113,12 @@ async function readJson<T>(path: string): Promise<T | undefined> {
   }
 }
 
-async function readStatusByRoot(root: string): Promise<ExternalSubagentStatus | undefined> {
+async function readStatusByRoot(
+  root: string,
+  rawStatus?: AsyncStatusFile,
+): Promise<ExternalSubagentStatus | undefined> {
   const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
-  const status = await readJson<AsyncStatusFile>(statusPath);
+  const status = rawStatus ?? (await readJson<AsyncStatusFile>(statusPath));
   if (!isExternalState(status?.state)) return undefined;
   const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
   const out: ExternalSubagentStatus = {
@@ -199,6 +202,32 @@ export async function getExternalSubagentStatusForRun(
   return readStatusByRoot(root);
 }
 
+/**
+ * Return every async run owned by one parent session. This is deliberately
+ * status-file based instead of child-session based: pi-subagents creates the
+ * status file before its child JSONL is discoverable.
+ */
+export async function listExternalSubagentStatusesForParents(
+  parentSessionIds: ReadonlySet<string>,
+): Promise<Map<string, ExternalSubagentStatus[]>> {
+  const byParent = new Map<string, ExternalSubagentStatus[]>();
+  if (parentSessionIds.size === 0) return byParent;
+  for (const root of await readStatusRoots()) {
+    const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
+    const rawStatus = await readJson<AsyncStatusFile>(statusPath);
+    // Terminal histories are not sidebar activity. Avoid opening their parent
+    // transcript just to reject them; old async runs can outnumber live ones.
+    if (!isExternalState(rawStatus?.state) || !ACTIVE_STATES.has(rawStatus.state)) continue;
+    const status = await readStatusByRoot(root, rawStatus);
+    if (status?.parentSessionId === undefined || !parentSessionIds.has(status.parentSessionId))
+      continue;
+    const current = byParent.get(status.parentSessionId);
+    if (current === undefined) byParent.set(status.parentSessionId, [status]);
+    else current.push(status);
+  }
+  return byParent;
+}
+
 export async function getExternalSubagentStatusForSession(info: {
   runId?: string | undefined;
   path?: string | undefined;
@@ -268,10 +297,20 @@ async function sessionIdFromSessionReference(ref: string | undefined): Promise<s
   if (ref === undefined) return undefined;
   if (getSession(ref) !== undefined) return ref;
   try {
-    const firstLine = (await readFile(ref, "utf8")).split(/\r?\n/, 1)[0];
-    if (firstLine === undefined) return undefined;
-    const header = JSON.parse(firstLine) as { type?: unknown; id?: unknown };
-    return header.type === "session" && typeof header.id === "string" ? header.id : undefined;
+    // Session headers are the first JSONL line. Never load an entire parent
+    // transcript just to resolve it: a project may have many old async runs
+    // pointing at large parent files during sidebar reconstruction.
+    const file = await open(ref, "r");
+    try {
+      const buffer = Buffer.alloc(8192);
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+      const firstLine = buffer.toString("utf8", 0, bytesRead).split(/\r?\n/, 1)[0];
+      if (firstLine === undefined) return undefined;
+      const header = JSON.parse(firstLine) as { type?: unknown; id?: unknown };
+      return header.type === "session" && typeof header.id === "string" ? header.id : undefined;
+    } finally {
+      await file.close();
+    }
   } catch {
     return undefined;
   }

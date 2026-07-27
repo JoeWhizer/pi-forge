@@ -293,7 +293,9 @@ export function SessionList({ projectId }: Props) {
         isActive={s.sessionId === activeSessionId}
         isRunning={streamingBySession[s.sessionId] ?? false}
         isExternalBackgroundLive={s.isExternalLive === true}
-        backgroundChildCount={activeBackgroundDescendantCount.get(s.sessionId) ?? 0}
+        backgroundChildCount={
+          s.backgroundSubagentRuns?.length ?? activeBackgroundDescendantCount.get(s.sessionId) ?? 0
+        }
         hasUnreadResponse={unreadResponseBySession[s.sessionId] ?? false}
         isSelected={selectedIds.has(s.sessionId)}
         isRenaming={renamingId === s.sessionId}
@@ -381,7 +383,7 @@ interface SessionRowProps {
   isRunning: boolean;
   /** This row is a pi-subagents child whose work is running outside Forge's registry. */
   isExternalBackgroundLive: boolean;
-  /** Active external children below this row, including nested descendants. */
+  /** Active background runs, including pre-discovery parent-owned runs. */
   backgroundChildCount: number;
   hasUnreadResponse: boolean;
   isSelected: boolean;

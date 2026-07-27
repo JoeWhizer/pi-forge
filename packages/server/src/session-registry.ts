@@ -53,7 +53,10 @@ import { bridgeWorkerAgentEvent } from "./orchestration/event-bridge.js";
 import { notifySupervisorDisposed, notifySupervisorIdle } from "./orchestration/inbox.js";
 import { archiveSessionFiles } from "./session-archive.js";
 import { generateSessionTitleFromPrompt, isGenericSessionName } from "./session-title.js";
-import { getExternalSubagentStatusForSession } from "./subagents-external.js";
+import {
+  getExternalSubagentStatusForSession,
+  listExternalSubagentStatusesForParents,
+} from "./subagents-external.js";
 import { readSandboxSettings } from "./sandbox-settings.js";
 import {
   extensionNameFromStack,
@@ -160,6 +163,11 @@ export interface UnifiedSession {
   isExternalLive?: boolean;
   /** Authoritative pi-subagents async status state when known. */
   externalState?: "queued" | "running" | "complete" | "failed" | "paused" | "stopped";
+  /** Active background runs owned by this parent, including runs whose child JSONL is not visible yet. */
+  backgroundSubagentRuns?: {
+    runId: string;
+    state: "queued" | "running";
+  }[];
   /**
    * Absolute path to the session JSONL on disk. Surfaced so the
    * client can resolve a `sessionFile` reference (e.g. from a
@@ -1815,6 +1823,22 @@ export async function listSessionsForProject(
   // pi-subagents child sessions. Existing disk-derived parentSessionId wins
   // because those are true child JSONLs whose resume/delete semantics depend
   // on the subdirectory layout.
+  // Status files are created before child session JSONLs. Overlay active
+  // runs onto their stable parent id so the sidebar can show activity during
+  // that discovery gap and reconstruct it after reload/reconnect.
+  const externalStatusesByParent = await listExternalSubagentStatusesForParents(
+    new Set(liveById.keys()),
+  );
+  for (const session of liveById.values()) {
+    const active = (externalStatusesByParent.get(session.sessionId) ?? [])
+      .filter(
+        (status): status is typeof status & { state: "queued" | "running" } =>
+          status.isExternalLive,
+      )
+      .map((status) => ({ runId: status.rootRunId, state: status.state }));
+    if (active.length > 0) session.backgroundSubagentRuns = active;
+  }
+
   try {
     const orchestrationStore = await readStore();
     for (const [workerId, rec] of Object.entries(orchestrationStore.workers)) {

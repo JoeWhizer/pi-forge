@@ -212,6 +212,34 @@ function findProjectIdForSession(state: SessionState, sessionId: string): string
   return findSessionInState(state, sessionId)?.projectId;
 }
 
+/**
+ * Record the pi-subagents async launch result before the child JSONL exists.
+ * The tool result's runId is stable across sidebar refreshes; never infer an
+ * identity from a session label or timestamp.
+ */
+export function addBackgroundSubagentRunToLists(
+  byProject: SessionState["byProject"],
+  parentSessionId: string,
+  runId: string,
+): SessionState["byProject"] {
+  let changed = false;
+  const next: SessionState["byProject"] = {};
+  for (const [projectId, sessions] of Object.entries(byProject)) {
+    const updated = sessions.map((session) => {
+      if (session.sessionId !== parentSessionId) return session;
+      const existing = session.backgroundSubagentRuns ?? [];
+      if (existing.some((run) => run.runId === runId)) return session;
+      changed = true;
+      return {
+        ...session,
+        backgroundSubagentRuns: [...existing, { runId, state: "running" as const }],
+      };
+    });
+    next[projectId] = updated;
+  }
+  return changed ? next : byProject;
+}
+
 function readOnlyExternalBanner(state?: string): string {
   return `Read-only: pi-subagents child is ${state ?? "running"} externally`;
 }
@@ -1203,6 +1231,21 @@ function applyEvent(
 
   if (event.type === "tool_execution_end") {
     const isWrite = isToolEventNamed(event, "write");
+    // pi-subagents returns its async launch receipt here. This is the first
+    // stable runId signal, so show parent activity without waiting for the
+    // child JSONL scanner. Do not add a second chat notification.
+    const result = event.result as { details?: { runId?: unknown; asyncId?: unknown } } | undefined;
+    const asyncRunId =
+      event.toolName === "subagent" &&
+      typeof result?.details?.runId === "string" &&
+      typeof result.details.asyncId === "string"
+        ? result.details.runId
+        : undefined;
+    if (asyncRunId !== undefined) {
+      set((s) => ({
+        byProject: addBackgroundSubagentRunToLists(s.byProject, sessionId, asyncRunId),
+      }));
+    }
     set((s) => ({
       activeToolBySession: { ...s.activeToolBySession, [sessionId]: undefined },
       toolCallGenerationBySession: { ...s.toolCallGenerationBySession, [sessionId]: undefined },

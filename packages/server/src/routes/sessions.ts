@@ -64,6 +64,18 @@ const unifiedSchema = {
       type: "string",
       enum: ["queued", "running", "complete", "failed", "paused", "stopped"],
     },
+    /** Active runs owned by this parent, even before child JSONL discovery. */
+    backgroundSubagentRuns: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["runId", "state"],
+        properties: {
+          runId: { type: "string" },
+          state: { type: "string", enum: ["queued", "running"] },
+        },
+      },
+    },
     /**
      * Absolute disk path to the session JSONL — used by the
      * SubagentResultCard to resolve a result's `sessionFile` reference
@@ -94,6 +106,7 @@ function unifiedFromUnified(u: UnifiedSession): Record<string, unknown> {
   if (u.path !== undefined) out.path = u.path;
   if (u.isExternalLive !== undefined) out.isExternalLive = u.isExternalLive;
   if (u.externalState !== undefined) out.externalState = u.externalState;
+  if (u.backgroundSubagentRuns !== undefined) out.backgroundSubagentRuns = u.backgroundSubagentRuns;
   return out;
 }
 

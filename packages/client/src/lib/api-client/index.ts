@@ -393,6 +393,15 @@ function vUnifiedSession(value: unknown, status: number): UnifiedSession {
   ) {
     out.externalState = value.externalState;
   }
+  if (Array.isArray(value.backgroundSubagentRuns)) {
+    const runs = value.backgroundSubagentRuns.filter(
+      (run): run is { runId: string; state: "queued" | "running" } =>
+        isObject(run) &&
+        typeof run.runId === "string" &&
+        (run.state === "queued" || run.state === "running"),
+    );
+    if (runs.length === value.backgroundSubagentRuns.length) out.backgroundSubagentRuns = runs;
+  }
   if (typeof value.path === "string") out.path = value.path;
   return out;
 }
