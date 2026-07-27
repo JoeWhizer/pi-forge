@@ -172,7 +172,8 @@ export interface UnifiedSession {
   /** Active background runs owned by this parent, including runs whose child JSONL is not visible yet. */
   backgroundSubagentRuns?: {
     runId: string;
-    state: "queued" | "running";
+    /** paused is status.json acknowledgement, never active spinner work. */
+    state: "queued" | "running" | "paused";
   }[];
   /**
    * Absolute path to the session JSONL on disk. Surfaced so the
@@ -2070,13 +2071,13 @@ export async function listSessionsForProject(
     new Set(liveById.keys()),
   );
   for (const session of liveById.values()) {
-    const active = (externalStatusesByParent.get(session.sessionId) ?? [])
+    const parentVisible = (externalStatusesByParent.get(session.sessionId) ?? [])
       .filter(
-        (status): status is typeof status & { state: "queued" | "running" } =>
-          status.isExternalLive,
+        (status): status is typeof status & { state: "queued" | "running" | "paused" } =>
+          status.state === "queued" || status.state === "running" || status.state === "paused",
       )
       .map((status) => ({ runId: status.rootRunId, state: status.state }));
-    if (active.length > 0) session.backgroundSubagentRuns = active;
+    if (parentVisible.length > 0) session.backgroundSubagentRuns = parentVisible;
   }
 
   try {

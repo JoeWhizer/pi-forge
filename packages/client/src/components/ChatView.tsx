@@ -47,6 +47,7 @@ import { QuickActionRunCard } from "./QuickActionRunCard";
 import { useQuickActionRunsStore, type QuickActionRun } from "../store/quick-actions-store";
 import { placeChatTimelineItems, type ChatTimelinePosition } from "../lib/chat-timeline";
 import { parseSubagentDetails, type SubagentResult } from "../lib/subagent-parser";
+import { pauseControlState, type PauseControlState } from "../lib/subagent-control-state";
 import { OrchestrationPanel } from "./OrchestrationPanel";
 import { useUiConfigStore } from "../store/ui-config-store";
 import {
@@ -2456,6 +2457,7 @@ function SubagentInflightOrResult({
       <SubagentResultCard
         message={result}
         argsText={argsText}
+        input={input}
         outputText={outputText}
         isError={isError}
       />
@@ -2504,17 +2506,24 @@ function SubagentInflightOrResult({
 function SubagentResultCard({
   message,
   argsText,
+  input,
   outputText,
   isError,
 }: {
   message: AgentMessageLike;
   argsText: string;
+  input?: Record<string, unknown> | undefined;
   outputText: string;
   isError: boolean;
 }) {
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const setActiveProject = useProjectStore((s) => s.setActive);
   const byProject = useSessionStore((s) => s.byProject);
+  const loadSessionsForProject = useSessionStore((s) => s.loadSessionsForProject);
+  const byProjectRef = useRef(byProject);
+  byProjectRef.current = byProject;
+  const [pauseCardMountedAt] = useState(() => Date.now());
+  const [pauseStatusNow, setPauseStatusNow] = useState(() => Date.now());
   // Resolve a tool-result `sessionFile` (absolute path) back to its
   // canonical sessionId by scanning the loaded session list. pi-subagents
   // writes children as a literal `session.jsonl`, so the filename's
@@ -2557,22 +2566,63 @@ function SubagentResultCard({
   const parsed = parseSubagentDetails(message.details);
   const isManagement = parsed.mode === "management";
   const count = parsed.results.length;
-  const headline =
-    count === 1
-      ? `Sub-agent: ${parsed.results[0]!.agent}`
-      : count > 1
-        ? `${count} sub-agents (${parsed.mode})`
-        : isManagement
-          ? "Sub-agent management"
-          : "Sub-agent";
+  const pauseAction = input?.action;
+  const pauseTargetRunId = input?.id ?? input?.runId;
+  const requestedAt =
+    typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+      ? message.timestamp
+      : pauseCardMountedAt;
+  const pauseState = pauseControlState({
+    action: pauseAction,
+    targetRunId: pauseTargetRunId,
+    isError,
+    requestedAt,
+    now: pauseStatusNow,
+    sessions: Object.values(byProject).flat(),
+  });
 
-  // Light-blue (sky) color treatment per request — distinctive but
-  // soft. Failures get a red border but keep the rest of the card
-  // intact (so the input + output sections are still inspectable
-  // when the call errored).
-  const borderColors = isError
-    ? "border-red-700/50 border-l-red-400 bg-red-950/15 light:border-red-300 light:border-l-red-600 light:bg-red-50"
-    : "border-sky-700/50 border-l-sky-400 bg-sky-950/15 light:border-sky-300 light:border-l-sky-600 light:bg-sky-50";
+  // An interrupt result in pi-subagents 0.37 only means the control request
+  // was written. Refresh the status bridge while awaiting status.json; never
+  // turn the request into a paused/success state locally.
+  useEffect(() => {
+    if (pauseState !== "pending") return;
+    const refresh = (): void => {
+      for (const projectId of Object.keys(byProjectRef.current)) {
+        void loadSessionsForProject(projectId);
+      }
+    };
+    refresh();
+    const earlyRefresh = window.setTimeout(refresh, 1_000);
+    const watcherRefresh = window.setTimeout(refresh, 3_500);
+    const timeout = window.setTimeout(() => setPauseStatusNow(Date.now()), 10_000);
+    return () => {
+      window.clearTimeout(earlyRefresh);
+      window.clearTimeout(watcherRefresh);
+      window.clearTimeout(timeout);
+    };
+  }, [loadSessionsForProject, pauseState]);
+
+  const headline =
+    pauseState !== undefined
+      ? "Sub-agent pause"
+      : count === 1
+        ? `Sub-agent: ${parsed.results[0]!.agent}`
+        : count > 1
+          ? `${count} sub-agents (${parsed.mode})`
+          : isManagement
+            ? "Sub-agent management"
+            : "Sub-agent";
+
+  const pauseHasProblem =
+    pauseState === "failed" || pauseState === "terminal" || pauseState === "timeout";
+  // A control request is amber while awaiting its status.json acknowledgement;
+  // only explicit tool failures or unacknowledged/terminal outcomes are red.
+  const borderColors =
+    isError || pauseHasProblem
+      ? "border-red-700/50 border-l-red-400 bg-red-950/15 light:border-red-300 light:border-l-red-600 light:bg-red-50"
+      : pauseState === "pending"
+        ? "border-amber-700/50 border-l-amber-400 bg-amber-950/15 light:border-amber-300 light:border-l-amber-600 light:bg-amber-50"
+        : "border-sky-700/50 border-l-sky-400 bg-sky-950/15 light:border-sky-300 light:border-l-sky-600 light:bg-sky-50";
 
   return (
     <div className={`overflow-hidden rounded border border-l-2 ${borderColors} text-xs`}>
@@ -2588,7 +2638,8 @@ function SubagentResultCard({
               {parsed.context}
             </span>
           )}
-          {isError && (
+          {pauseState !== undefined ? <PauseControlBadge state={pauseState} /> : null}
+          {isError && pauseState === undefined && (
             <span className="shrink-0 rounded bg-red-900/40 px-1 py-0.5 text-[9px] font-medium uppercase tracking-wider text-red-200 light:bg-red-100 light:text-red-800">
               error
             </span>
@@ -2651,6 +2702,32 @@ function SubagentResultCard({
         </details>
       )}
     </div>
+  );
+}
+
+function PauseControlBadge({ state }: { state: PauseControlState }) {
+  const text =
+    state === "paused"
+      ? "paused confirmed"
+      : state === "pending"
+        ? "awaiting status"
+        : state === "timeout"
+          ? "not confirmed"
+          : state === "terminal"
+            ? "run ended"
+            : "request failed";
+  const color =
+    state === "paused"
+      ? "bg-emerald-900/40 text-emerald-200 light:bg-emerald-100 light:text-emerald-800"
+      : state === "pending"
+        ? "bg-amber-900/40 text-amber-200 light:bg-amber-100 light:text-amber-800"
+        : "bg-red-900/40 text-red-200 light:bg-red-100 light:text-red-800";
+  return (
+    <span
+      className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-medium uppercase tracking-wider ${color}`}
+    >
+      {text}
+    </span>
   );
 }
 

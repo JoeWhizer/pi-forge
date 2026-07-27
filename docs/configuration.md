@@ -356,6 +356,16 @@ no extra config and renders the result as a rich card in the chat
 (integration detail in `CLAUDE.md` if you're modifying the discovery
 or render path).
 
+### pi-subagents pause acknowledgement
+
+With pi-subagents 0.37, `subagent({ action: "interrupt" })` reports that
+an interrupt was **requested** after it writes the control request; it does
+not wait for the detached runner to pause. Forge therefore keeps any active
+spinner until the matching `status.json` reports `paused`, then displays a
+non-spinning paused state. A failed, missing, stale, or unacknowledged run ID
+is never presented as a confirmed pause. This is an upstream control-channel
+limitation; Forge does not modify installed plugin files.
+
 ## Docker bind mounts
 
 The shipped `docker-compose.yml` mounts these paths by default:

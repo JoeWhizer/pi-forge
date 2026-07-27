@@ -83,6 +83,10 @@ export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-run
 
 const TERMINAL_STATES = new Set<ExternalSubagentState>(["complete", "failed", "paused", "stopped"]);
 const ACTIVE_STATES = new Set<ExternalSubagentState>(["queued", "running"]);
+// A pause is terminal for the child process but remains actionable to the
+// parent. Keep it in the parent projection so Forge can distinguish an
+// acknowledged pause from a merely scheduled interrupt request.
+const PARENT_VISIBLE_STATES = new Set<ExternalSubagentState>(["queued", "running", "paused"]);
 const deliveredCompletionKeys = new Set<string>();
 // Status files are rewritten repeatedly while a run is active. Remember every
 // delivered state transition so a poll/watch burst creates one sidebar update,
@@ -206,9 +210,11 @@ export async function getExternalSubagentStatusForRun(
 }
 
 /**
- * Return every async run owned by one parent session. This is deliberately
- * status-file based instead of child-session based: pi-subagents creates the
- * status file before its child JSONL is discoverable.
+ * Return every parent-visible async run owned by one parent session. This is
+ * deliberately status-file based instead of child-session based: pi-subagents
+ * creates the status file before its child JSONL is discoverable. Paused runs
+ * stay visible so the UI can show status.json acknowledgement without keeping
+ * an activity spinner alive.
  */
 export async function listExternalSubagentStatusesForParents(
   parentSessionIds: ReadonlySet<string>,
@@ -218,9 +224,10 @@ export async function listExternalSubagentStatusesForParents(
   for (const root of await readStatusRoots()) {
     const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
     const rawStatus = await readJson<AsyncStatusFile>(statusPath);
-    // Terminal histories are not sidebar activity. Avoid opening their parent
-    // transcript just to reject them; old async runs can outnumber live ones.
-    if (!isExternalState(rawStatus?.state) || !ACTIVE_STATES.has(rawStatus.state)) continue;
+    // Completed/failed/stopped histories are not sidebar state. A paused run
+    // is deliberately retained: it confirms an interrupt only once the runner
+    // has persisted status.json, and is not treated as active work.
+    if (!isExternalState(rawStatus?.state) || !PARENT_VISIBLE_STATES.has(rawStatus.state)) continue;
     const status = await readStatusByRoot(root, rawStatus);
     if (status?.parentSessionId === undefined || !parentSessionIds.has(status.parentSessionId))
       continue;

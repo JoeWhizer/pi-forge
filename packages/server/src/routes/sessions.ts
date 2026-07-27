@@ -72,7 +72,7 @@ const unifiedSchema = {
         required: ["runId", "state"],
         properties: {
           runId: { type: "string" },
-          state: { type: "string", enum: ["queued", "running"] },
+          state: { type: "string", enum: ["queued", "running", "paused"] },
         },
       },
     },

@@ -10,6 +10,7 @@ import { EMPTY_SESSIONS, useSessionStore } from "../store/session-store";
 import { useProjectStore } from "../store/project-store";
 import { ConfirmDialog } from "./Modal";
 import type { UnifiedSession } from "../lib/api-client";
+import { backgroundSubagentRunCounts } from "../lib/subagent-control-state";
 
 interface Props {
   projectId: string;
@@ -294,9 +295,13 @@ export function SessionList({ projectId }: Props) {
         isRunning={streamingBySession[s.sessionId] ?? false}
         isExternalBackgroundLive={s.isExternalLive === true}
         externalState={s.externalState}
-        backgroundChildCount={
-          s.backgroundSubagentRuns?.length ?? activeBackgroundDescendantCount.get(s.sessionId) ?? 0
-        }
+        backgroundChildCount={(() => {
+          const counts = backgroundSubagentRunCounts(s.backgroundSubagentRuns);
+          return counts.active > 0
+            ? counts.active
+            : (activeBackgroundDescendantCount.get(s.sessionId) ?? 0);
+        })()}
+        pausedBackgroundRunCount={backgroundSubagentRunCounts(s.backgroundSubagentRuns).paused}
         hasUnreadResponse={unreadResponseBySession[s.sessionId] ?? false}
         isSelected={selectedIds.has(s.sessionId)}
         isRenaming={renamingId === s.sessionId}
@@ -388,6 +393,8 @@ interface SessionRowProps {
   externalState: UnifiedSession["externalState"];
   /** Active background runs, including pre-discovery parent-owned runs. */
   backgroundChildCount: number;
+  /** Paused parent-owned runs confirmed by pi-subagents status.json. */
+  pausedBackgroundRunCount: number;
   hasUnreadResponse: boolean;
   isSelected: boolean;
   isRenaming: boolean;
@@ -417,6 +424,7 @@ function SessionRow(props: SessionRowProps) {
     isExternalBackgroundLive,
     externalState,
     backgroundChildCount,
+    pausedBackgroundRunCount,
     hasUnreadResponse,
     isSelected,
     isRenaming,
@@ -539,6 +547,16 @@ function SessionRow(props: SessionRowProps) {
         >
           <LoaderCircle size={10} className="animate-spin" aria-hidden="true" />
           {backgroundChildCount} bg
+        </span>
+      ) : null}
+      {pausedBackgroundRunCount > 0 ? (
+        <span
+          className="inline-flex shrink-0 items-center rounded bg-amber-950/50 px-1 py-0.5 text-[9px] font-medium text-amber-300 light:bg-amber-100 light:text-amber-800"
+          role="status"
+          aria-label={`${pausedBackgroundRunCount} background subagent${pausedBackgroundRunCount === 1 ? "" : "s"} paused`}
+          title="Paused status confirmed by pi-subagents"
+        >
+          {pausedBackgroundRunCount} paused
         </span>
       ) : externalState === "complete" ? (
         <span

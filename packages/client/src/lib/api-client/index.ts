@@ -395,10 +395,10 @@ function vUnifiedSession(value: unknown, status: number): UnifiedSession {
   }
   if (Array.isArray(value.backgroundSubagentRuns)) {
     const runs = value.backgroundSubagentRuns.filter(
-      (run): run is { runId: string; state: "queued" | "running" } =>
+      (run): run is { runId: string; state: "queued" | "running" | "paused" } =>
         isObject(run) &&
         typeof run.runId === "string" &&
-        (run.state === "queued" || run.state === "running"),
+        (run.state === "queued" || run.state === "running" || run.state === "paused"),
     );
     if (runs.length === value.backgroundSubagentRuns.length) out.backgroundSubagentRuns = runs;
   }

@@ -259,6 +259,25 @@ async function main(): Promise<void> {
       JSON.stringify({
         runId: preDiscoveryRunId,
         sessionId: delayedParent.sessionId,
+        state: "paused",
+      }),
+      "utf8",
+    );
+    const preDiscoveryPausedList = await registry.listSessionsForProject(project.id, project.path);
+    assert(
+      "paused status confirms lifecycle on the parent before child discovery",
+      preDiscoveryPausedList
+        .find((s) => s.sessionId === delayedParent.sessionId)
+        ?.backgroundSubagentRuns?.some(
+          (run) => run.runId === preDiscoveryRunId && run.state === "paused",
+        ) === true,
+      `row=${JSON.stringify(preDiscoveryPausedList.find((s) => s.sessionId === delayedParent.sessionId))}`,
+    );
+    await writeFile(
+      join(subagentsExternal.SUBAGENTS_ASYNC_DIR, preDiscoveryRunId, "status.json"),
+      JSON.stringify({
+        runId: preDiscoveryRunId,
+        sessionId: delayedParent.sessionId,
         state: "complete",
       }),
       "utf8",
@@ -268,7 +287,7 @@ async function main(): Promise<void> {
       project.path,
     );
     assert(
-      "terminal background status clears parent activity before child discovery",
+      "complete background status clears parent lifecycle state before child discovery",
       preDiscoveryTerminalList.find((s) => s.sessionId === delayedParent.sessionId)
         ?.backgroundSubagentRuns === undefined,
     );
