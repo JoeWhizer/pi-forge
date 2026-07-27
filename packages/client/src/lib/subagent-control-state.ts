@@ -1,4 +1,4 @@
-import type { UnifiedSession } from "./api-client";
+import type { UnifiedSession } from "./api-client/types";
 
 export const PAUSE_CONFIRMATION_TIMEOUT_MS = 10_000;
 
