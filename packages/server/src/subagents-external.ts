@@ -209,8 +209,10 @@ export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-run
 /** pi-subagents 0.37 native supervisor request/reply filesystem channel. */
 export const SUBAGENTS_SUPERVISOR_CHANNEL_DIR = join(SUBAGENTS_TEMP_ROOT, "supervisor-channels");
 
-export type ExternalSupervisorRequestStatus = "open" | "answered" | "cancelled" | "expired";
+export type ExternalSupervisorRequestStatus = "open" | "answered" | "expired";
 export type ExternalSupervisorRequestReason = "need_decision" | "interview_request";
+/** Only Forge-controlled Approve or Reject actions create a decision classification. */
+export type ExternalSupervisorDecision = "approved" | "rejected" | "no-decision";
 
 /** A sanitized, correlated projection of pi-subagents' native supervisor channel. */
 export interface ExternalSupervisorRequest {
@@ -225,6 +227,8 @@ export interface ExternalSupervisorRequest {
   expiresAt?: number;
   message: string;
   interview?: unknown;
+  /** Terminal-originated replies remain no-decision because Forge did not classify them. */
+  decision: ExternalSupervisorDecision;
   status: ExternalSupervisorRequestStatus;
   repliedAt?: number;
 }
@@ -249,6 +253,8 @@ interface SupervisorReplyFile {
   requestId?: unknown;
   createdAt?: unknown;
   message?: unknown;
+  /** Ignored on ingestion: only Forge's persisted action is authoritative. */
+  decision?: unknown;
 }
 
 interface SupervisorRequestRecord extends ExternalSupervisorRequest {
@@ -380,6 +386,7 @@ function parseSupervisorRequest(
     expiresAt,
     message,
     ...(interview === undefined ? {} : { interview }),
+    decision: "no-decision",
     status: "open",
     channelDir,
   };
@@ -456,6 +463,7 @@ async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
 function isPersistedSupervisorRequest(request: unknown): request is ExternalSupervisorRequest {
   if (!request || typeof request !== "object") return false;
   const value = request as Partial<ExternalSupervisorRequest>;
+  const legacyStatus = (request as { status?: unknown }).status;
   return (
     isSafeSupervisorId(value.requestId) &&
     safeSupervisorString(value.parentSessionId, 256) !== undefined &&
@@ -469,17 +477,28 @@ function isPersistedSupervisorRequest(request: unknown): request is ExternalSupe
     finiteTimestamp(value.createdAt) !== undefined &&
     finiteTimestamp(value.expiresAt) !== undefined &&
     safeSupervisorString(value.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES) !== undefined &&
-    (value.status === "open" ||
-      value.status === "answered" ||
-      value.status === "cancelled" ||
-      value.status === "expired")
+    (legacyStatus === "open" ||
+      legacyStatus === "answered" ||
+      legacyStatus === "cancelled" ||
+      legacyStatus === "expired")
   );
+}
+
+function persistedSupervisorDecision(value: unknown): ExternalSupervisorDecision {
+  return value === "approved" || value === "rejected" ? value : "no-decision";
 }
 
 async function readSupervisorHistory(): Promise<ExternalSupervisorRequest[]> {
   const parsed = await readJson<{ requests?: unknown }>(SUPERVISOR_HISTORY_PATH);
   if (!Array.isArray(parsed?.requests)) return [];
-  return parsed.requests.filter(isPersistedSupervisorRequest).slice(0, MAX_SUPERVISOR_HISTORY);
+  return parsed.requests
+    .filter(isPersistedSupervisorRequest)
+    .slice(0, MAX_SUPERVISOR_HISTORY)
+    .map((request) =>
+      (request as { status?: unknown }).status === "cancelled"
+        ? { ...request, status: "answered" as const, decision: "rejected" as const }
+        : { ...request, decision: persistedSupervisorDecision(request.decision) },
+    );
 }
 
 async function writeSupervisorHistory(requests: ExternalSupervisorRequest[]): Promise<void> {
@@ -542,11 +561,11 @@ function publicSupervisorRequest(
   record: SupervisorRequestRecord | ExternalSupervisorRequest,
 ): ExternalSupervisorRequest {
   const { channelDir: _channelDir, ...request } = record as SupervisorRequestRecord;
-  return request;
+  return { ...request, decision: persistedSupervisorDecision(request.decision) };
 }
 
 export type ExternalSupervisorReplyResult =
-  | { accepted: true; status: "answered" | "cancelled"; repliedAt: number }
+  | { accepted: true; status: "answered"; decision: ExternalSupervisorDecision; repliedAt: number }
   | {
       accepted: false;
       code:
@@ -554,6 +573,7 @@ export type ExternalSupervisorReplyResult =
         | "request_not_open"
         | "request_expired"
         | "request_already_answered"
+        | "request_not_decision"
         | "invalid_reply";
       message: string;
     };
@@ -583,11 +603,13 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
     for (const request of live) {
       const reply = await readSupervisorReply(replyFileFor(request), request.requestId);
       const prior = byId.get(request.requestId);
-      const status =
-        prior?.status === "cancelled" ? "cancelled" : supervisorStatus(request, reply, now);
+      const status = supervisorStatus(request, reply, now);
       const replyCreatedAt = reply === undefined ? undefined : finiteTimestamp(reply.createdAt);
       byId.set(request.requestId, {
         ...publicSupervisorRequest(request),
+        // A native/terminal reply has no decision classification. Preserve only
+        // a decision that Forge persisted when it wrote the reply itself.
+        decision: prior === undefined ? "no-decision" : persistedSupervisorDecision(prior.decision),
         status,
         ...(replyCreatedAt !== undefined
           ? { repliedAt: replyCreatedAt }
@@ -631,7 +653,7 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
 export async function replyExternalSupervisorRequest(
   requestId: string,
   message: string,
-  declined = false,
+  decision: ExternalSupervisorDecision = "no-decision",
 ): Promise<ExternalSupervisorReplyResult> {
   return supervisorRequestLock(async () => {
     if (!isSafeSupervisorId(requestId)) {
@@ -659,6 +681,13 @@ export async function replyExternalSupervisorRequest(
         message: "The supervisor request is no longer open.",
       };
     }
+    if (decision !== "no-decision" && request.reason !== "need_decision") {
+      return {
+        accepted: false,
+        code: "request_not_decision",
+        message: "Only need_decision requests can be approved or rejected.",
+      };
+    }
     const replyPath = replyFileFor(request);
     if ((await readSupervisorReply(replyPath, requestId)) !== undefined) {
       return {
@@ -681,6 +710,7 @@ export async function replyExternalSupervisorRequest(
       requestId,
       createdAt: repliedAt,
       message: normalized,
+      ...(decision === "no-decision" ? {} : { decision }),
     };
     try {
       const repliesDir = join(request.channelDir, "replies");
@@ -712,10 +742,10 @@ export async function replyExternalSupervisorRequest(
       await unlink(temporary).catch(() => undefined);
     }
     const history = await readSupervisorHistory();
-    const status = declined ? ("cancelled" as const) : ("answered" as const);
     const projected: ExternalSupervisorRequest = {
       ...publicSupervisorRequest(request),
-      status,
+      decision,
+      status: "answered",
       repliedAt,
     };
     const retained = history.filter((record) => record.requestId !== requestId);
@@ -723,7 +753,7 @@ export async function replyExternalSupervisorRequest(
     // cannot be evicted when history is already full.
     retained.unshift(projected);
     await writeSupervisorHistory(sortSupervisorHistory(retained));
-    return { accepted: true, status, repliedAt };
+    return { accepted: true, status: "answered", decision, repliedAt };
   });
 }
 

@@ -54,7 +54,12 @@ const steeringSchema = {
 
 const supervisorStatusSchema = {
   type: "string",
-  enum: ["open", "answered", "cancelled", "expired"],
+  enum: ["open", "answered", "expired"],
+} as const;
+
+const supervisorDecisionSchema = {
+  type: "string",
+  enum: ["approved", "rejected", "no-decision"],
 } as const;
 
 const supervisorRequestSchema = {
@@ -69,6 +74,7 @@ const supervisorRequestSchema = {
     "expectsReply",
     "createdAt",
     "message",
+    "decision",
     "status",
   ],
   properties: {
@@ -83,6 +89,7 @@ const supervisorRequestSchema = {
     expiresAt: { type: "number", minimum: 0 },
     message: { type: "string" },
     interview: {},
+    decision: supervisorDecisionSchema,
     status: supervisorStatusSchema,
     repliedAt: { type: "number", minimum: 0 },
   },
@@ -90,10 +97,11 @@ const supervisorRequestSchema = {
 
 const supervisorReplyResponseSchema = {
   type: "object",
-  required: ["accepted", "status", "repliedAt"],
+  required: ["accepted", "status", "decision", "repliedAt"],
   properties: {
     accepted: { const: true },
-    status: { type: "string", enum: ["answered", "cancelled"] },
+    status: { const: "answered" },
+    decision: supervisorDecisionSchema,
     repliedAt: { type: "number", minimum: 0 },
   },
 } as const;
@@ -125,7 +133,7 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
     async () => ({ requests: await listExternalSupervisorRequests() }),
   );
 
-  for (const action of ["reply", "decline"] as const) {
+  for (const action of ["reply", "approve", "reject", "decline"] as const) {
     fastify.post<{ Params: { requestId: string }; Body: { message?: string } }>(
       `/subagent-supervisor/requests/:requestId/${action}`,
       {
@@ -138,8 +146,10 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
         schema: {
           description:
             action === "reply"
-              ? "Atomically answer one exact pi-subagents native supervisor request."
-              : "Atomically decline one exact pi-subagents native supervisor request with a safe reply.",
+              ? "Atomically send a free-text reply with no decision classification."
+              : action === "approve"
+                ? "Atomically approve one exact need_decision supervisor request."
+                : "Atomically reject one exact need_decision supervisor request; decline is a legacy alias.",
           tags: ["sessions"],
           params: {
             type: "object",
@@ -172,7 +182,12 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
               properties: {
                 error: {
                   type: "string",
-                  enum: ["request_not_open", "request_expired", "request_already_answered"],
+                  enum: [
+                    "request_not_open",
+                    "request_expired",
+                    "request_already_answered",
+                    "request_not_decision",
+                  ],
                 },
                 message: { type: "string" },
               },
@@ -181,10 +196,20 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
         },
       },
       async (req, reply) => {
+        const decision =
+          action === "approve"
+            ? "approved"
+            : action === "reject" || action === "decline"
+              ? "rejected"
+              : "no-decision";
         const message =
-          action === "decline" && req.body?.message === undefined
-            ? "Declined by supervisor."
-            : normalizeExternalSupervisorReply(req.body?.message);
+          req.body?.message === undefined
+            ? decision === "approved"
+              ? "Approved by supervisor."
+              : decision === "rejected"
+                ? "Rejected by supervisor."
+                : undefined
+            : normalizeExternalSupervisorReply(req.body.message);
         if (message === undefined) {
           return reply.code(400).send({
             error: "invalid_reply",
@@ -194,7 +219,7 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
         const result = await replyExternalSupervisorRequest(
           req.params.requestId,
           message,
-          action === "decline",
+          decision,
         );
         if (result.accepted) return reply.code(202).send(result);
         return reply

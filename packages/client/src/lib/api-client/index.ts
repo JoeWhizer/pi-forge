@@ -43,6 +43,7 @@ import {
   type SubagentSupervisorRequest,
   type SubagentSupervisorRequestStatus,
   type SubagentSupervisorRequestReason,
+  type SubagentSupervisorDecision,
   type SubagentSupervisorReplyResponse,
   type ExtensionCommandSummary,
   type SessionSummary,
@@ -439,8 +440,15 @@ function vSubagentSupervisorStatus(
   value: unknown,
   status: number,
 ): SubagentSupervisorRequestStatus {
-  if (value !== "open" && value !== "answered" && value !== "cancelled" && value !== "expired") {
+  if (value !== "open" && value !== "answered" && value !== "expired") {
     fail(status, "expected pi-subagents supervisor request status");
+  }
+  return value;
+}
+
+function vSubagentSupervisorDecision(value: unknown, status: number): SubagentSupervisorDecision {
+  if (value !== "approved" && value !== "rejected" && value !== "no-decision") {
+    fail(status, "expected pi-subagents supervisor decision");
   }
   return value;
 }
@@ -488,6 +496,7 @@ function vSubagentSupervisorRequests(
         expectsReply: raw.expectsReply,
         createdAt: raw.createdAt,
         message: raw.message,
+        decision: vSubagentSupervisorDecision(raw.decision, status),
         status: vSubagentSupervisorStatus(raw.status, status),
       };
       if (typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt))
@@ -504,12 +513,17 @@ function vSubagentSupervisorReply(value: unknown, status: number): SubagentSuper
   if (
     !isObject(value) ||
     value.accepted !== true ||
-    (value.status !== "answered" && value.status !== "cancelled") ||
+    value.status !== "answered" ||
     typeof value.repliedAt !== "number" ||
     !Number.isFinite(value.repliedAt)
   )
     fail(status, "expected accepted pi-subagents supervisor reply");
-  return { accepted: true, status: value.status, repliedAt: value.repliedAt };
+  return {
+    accepted: true,
+    status: value.status,
+    decision: vSubagentSupervisorDecision(value.decision, status),
+    repliedAt: value.repliedAt,
+  };
 }
 
 function vSubagentFleetState(value: unknown, status: number): SubagentFleetState {
@@ -2118,6 +2132,19 @@ export const api = {
       vSubagentSupervisorReply,
       { method: "POST", body: { message } },
     ),
+  approveSubagentSupervisorRequest: (requestId: string, message?: string) =>
+    request(
+      `/api/v1/subagent-supervisor/requests/${encodeURIComponent(requestId)}/approve`,
+      vSubagentSupervisorReply,
+      { method: "POST", body: message === undefined ? {} : { message } },
+    ),
+  rejectSubagentSupervisorRequest: (requestId: string, message?: string) =>
+    request(
+      `/api/v1/subagent-supervisor/requests/${encodeURIComponent(requestId)}/reject`,
+      vSubagentSupervisorReply,
+      { method: "POST", body: message === undefined ? {} : { message } },
+    ),
+  // Legacy API compatibility: decline is an explicit rejected decision.
   declineSubagentSupervisorRequest: (requestId: string, message?: string) =>
     request(
       `/api/v1/subagent-supervisor/requests/${encodeURIComponent(requestId)}/decline`,

@@ -8,6 +8,16 @@ import {
 import { isCleanableSubagentFleetState, toggleSubagentFleetExpanded } from "../lib/subagent-fleet";
 
 const POLL_INTERVAL_MS = 3_000;
+const SUPERVISOR_REQUESTS_EXPANDED_KEY = "pi-forge/subagent-supervisor-requests-expanded";
+
+function readSupervisorRequestsExpanded(): boolean {
+  return localStorage.getItem(SUPERVISOR_REQUESTS_EXPANDED_KEY) !== "false";
+}
+
+function persistSupervisorRequestsExpanded(expanded: boolean): void {
+  localStorage.setItem(SUPERVISOR_REQUESTS_EXPANDED_KEY, String(expanded));
+}
+
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let loadGeneration = 0;
 
@@ -19,6 +29,7 @@ interface SubagentFleetState {
   expandedParents: Record<string, boolean>;
   expandedRuns: Record<string, boolean>;
   expandedSupervisorRequests: Record<string, boolean>;
+  supervisorRequestsExpanded: boolean;
   loading: boolean;
   refreshing: boolean;
   lastRefreshedAt: number | undefined;
@@ -30,6 +41,7 @@ interface SubagentFleetState {
   toggleParentExpanded: (parentKey: string, defaultExpanded: boolean) => void;
   toggleRunExpanded: (runId: string, defaultExpanded: boolean) => void;
   toggleSupervisorRequestExpanded: (requestId: string) => void;
+  toggleSupervisorRequestsExpanded: () => void;
   startPolling: () => void;
   stopPolling: () => void;
 }
@@ -42,6 +54,7 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   expandedParents: {},
   expandedRuns: {},
   expandedSupervisorRequests: {},
+  supervisorRequestsExpanded: readSupervisorRequestsExpanded(),
   loading: false,
   refreshing: false,
   lastRefreshedAt: undefined,
@@ -130,6 +143,13 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
         false,
       ),
     }));
+  },
+  toggleSupervisorRequestsExpanded: () => {
+    set((state) => {
+      const supervisorRequestsExpanded = !state.supervisorRequestsExpanded;
+      persistSupervisorRequestsExpanded(supervisorRequestsExpanded);
+      return { supervisorRequestsExpanded };
+    });
   },
   startPolling: () => {
     if (pollTimer !== undefined) return;

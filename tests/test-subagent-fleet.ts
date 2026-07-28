@@ -49,17 +49,18 @@ async function main(): Promise<void> {
     "utf8",
   );
   assert(
-    "Fleet renders browser-native supervisor requests with exact correlation and safe decline",
+    "Fleet renders browser-native supervisor requests with exact correlation and explicit decisions",
     fleetViewSource.includes("SupervisorRequests") &&
       fleetViewSource.includes("parentSessionId") &&
       fleetViewSource.includes("requestId") &&
       fleetViewSource.includes("replySubagentSupervisorRequest") &&
-      fleetViewSource.includes("declineSubagentSupervisorRequest") &&
-      fleetViewSource.includes("pi-subagents has no separate cancellation operation") &&
+      fleetViewSource.includes("approveSubagentSupervisorRequest") &&
+      fleetViewSource.includes("rejectSubagentSupervisorRequest") &&
+      fleetViewSource.includes("Rejecting sends a classified final native reply") &&
       !fleetViewSource.includes("pause supervisor"),
   );
   assert(
-    "Supervisor reply UI validates byte limits and restores accessible decline focus",
+    "Supervisor reply UI validates byte limits and restores accessible reject focus",
     fleetViewSource.includes("MAX_SUPERVISOR_REPLY_BYTES") &&
       fleetViewSource.includes("new TextEncoder().encode(normalized).byteLength") &&
       fleetViewSource.includes("declineConfirmationCancelRef.current?.focus()") &&
@@ -72,27 +73,33 @@ async function main(): Promise<void> {
     "utf8",
   );
   assert(
-    "Supervisor request cards are collapsed by default with persistent accessible expansion",
-    fleetViewSource.includes("expanded={expandedRequests[request.requestId] ?? false}") &&
+    "Supervisor requests frame is initially expanded and persists accessible user choice",
+    fleetViewSource.includes("aria-controls={contentId}") &&
       fleetViewSource.includes("aria-expanded={expanded}") &&
-      fleetViewSource.includes("aria-controls={detailsId}") &&
-      fleetViewSource.includes("onToggleExpanded(request.requestId)") &&
-      fleetStoreSource.includes("expandedSupervisorRequests") &&
-      fleetStoreSource.includes("toggleSupervisorRequestExpanded"),
+      fleetViewSource.includes("expanded={supervisorRequestsExpanded}") &&
+      fleetViewSource.includes("onToggleSection={toggleSupervisorRequestsExpanded}") &&
+      fleetViewSource.includes("expanded={expandedRequests[request.requestId] ?? false}") &&
+      fleetStoreSource.includes("SUPERVISOR_REQUESTS_EXPANDED_KEY") &&
+      fleetStoreSource.includes(
+        'localStorage.getItem(SUPERVISOR_REQUESTS_EXPANDED_KEY) !== "false"',
+      ) &&
+      fleetStoreSource.includes("toggleSupervisorRequestsExpanded"),
   );
   assert(
-    "Free-text replies use a neutral sent state; rejection is reserved for decline",
+    "Transport and decision state are separate; free-text never implies approval",
     fleetViewSource.includes('state: "reply-sent"') &&
       fleetViewSource.includes('label: "Reply sent"') &&
-      !fleetViewSource.includes("Approved") &&
-      fleetViewSource.includes("cancelled: {") &&
-      fleetViewSource.includes('state: "rejected"') &&
-      fleetViewSource.includes("Rejected — decline sent") &&
-      fleetViewSource.includes("Answered — terminal reply observed"),
+      fleetViewSource.includes("No decision recorded") &&
+      fleetViewSource.includes("Approved") &&
+      fleetViewSource.includes("Rejected") &&
+      fleetViewSource.includes('setSubmissionDecision("no-decision")') &&
+      fleetViewSource.includes('setSubmissionDecision("approved")') &&
+      fleetViewSource.includes("Answered — reply observed"),
   );
   assert(
-    "Supervisor request cards give textual status and truthful pi-subagents delivery limits",
-    fleetViewSource.includes("Needs decision") &&
+    "Supervisor request hierarchy has non-color-only structure and truthful delivery limits",
+    fleetViewSource.includes("border-2 border-amber-700/80") &&
+      fleetViewSource.includes("border-l-4 border-neutral-600") &&
       fleetViewSource.includes("Expired") &&
       fleetViewSource.includes("Reply error") &&
       fleetViewSource.includes("pi-subagents does not") &&

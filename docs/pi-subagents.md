@@ -4,21 +4,36 @@ Pi Forge reads the installed `pi-subagents` native supervisor channel (0.37) dir
 
 ## Supervisor requests
 
-Each request shows its exact `parentSessionId`, `runId`, and `requestId`, plus the request text and structured interview context when present. Replying uses a no-replace link for concurrent Forge browser submissions. pi-subagents 0.37 terminal replies use overwrite-capable rename, so Forge cannot guarantee a global browser/terminal first-writer result; an upstream no-clobber reply write is necessary for that guarantee.
+The **Supervisor requests** frame is expanded on first view. Its accessible toggle keeps the browser's collapsed or expanded choice through fleet polling and page reloads. Individual request cards stay independently collapsible.
 
-A request can be **open**, **sending** (in the active browser), **answered**, **declined**, or **expired**. Request history is stored newest-first in Forge data (up to 500 entries) and is recovered after a browser reload or server reconnect. When pi-subagents removes an answered request file, Forge correlates its matching reply file before preserving the answered history state. A request is expired only when its native `expiresAt` deadline has passed.
+The outer frame and its cards use separate borders, headers, and backgrounds so their hierarchy is visible without relying on color alone. Each request shows its exact `parentSessionId`, `runId`, and `requestId`, plus the request text and structured interview context when present.
 
-Decline is confirmed before it sends the safe native reply `Declined by supervisor.`. It is displayed as declined in Forge, but is still a normal reply to the child.
+### Reply transport vs. decision
+
+Reply transport and decision are intentionally separate:
+
+- **Reply sent** means Forge wrote a reply to the native channel; it does not confirm agent consumption.
+- **Answered — reply observed** means a reply file was observed, including a terminal-originated reply; it does not confirm agent consumption.
+- **No decision recorded** is shown for every free-text reply and for terminal-originated replies.
+- **Approved** and **Rejected** are only recorded by Forge's explicit **Approve** and **Reject** actions on `need_decision` requests.
+
+Approve and Reject write a native reply with a matching Forge decision classification (`approved` or `rejected`). The native 0.37 reader still consumes the normal reply message. Forge never infers a decision from arbitrary reply text. When Forge controls a decision reply, its persisted classification survives reply reconciliation; a terminal-only reply remains `no-decision`.
+
+Request history is stored newest-first in Forge data (up to 500 entries) and is recovered after a browser reload or server reconnect. When pi-subagents removes an answered request file, Forge correlates its matching reply file before preserving the answered history state. A request is expired only when its native `expiresAt` deadline has passed.
+
+The legacy decline endpoint remains available for compatibility and is explicitly treated as a Reject decision. It sends `Rejected by supervisor.` unless a message is provided.
 
 ## API
 
 All endpoints use the normal API authentication:
 
 - `GET /api/v1/subagent-supervisor/requests`
-- `POST /api/v1/subagent-supervisor/requests/:requestId/reply` with `{ "message": "..." }`
-- `POST /api/v1/subagent-supervisor/requests/:requestId/decline` with optional `{ "message": "..." }`
+- `POST /api/v1/subagent-supervisor/requests/:requestId/reply` with `{ "message": "..." }` records `no-decision`
+- `POST /api/v1/subagent-supervisor/requests/:requestId/approve` with optional `{ "message": "..." }` records `approved`
+- `POST /api/v1/subagent-supervisor/requests/:requestId/reject` with optional `{ "message": "..." }` records `rejected`
+- `POST /api/v1/subagent-supervisor/requests/:requestId/decline` is a compatibility alias for Reject
 
-Reply and decline endpoints validate input, are rate limited with the prompt-control limit, and return a conflict if the request has expired or another client already replied.
+Reply, approve, reject, and decline endpoints validate input, are rate limited with the prompt-control limit, and return a conflict if the request has expired or another client already replied. Approve and Reject are only valid for native `need_decision` requests.
 
 ## Unsupported native progress updates
 
@@ -26,4 +41,4 @@ Reply and decline endpoints validate input, are rate limited with the prompt-con
 
 ## Native protocol limitation
 
-`pi-subagents` 0.37 defines only a reply file for supervisor requests. It has no native cancellation message or acknowledgement beyond the child consuming that reply. Forge therefore does not emulate a terminal pause or claim that a child processed a response. Decline is represented as a final reply; an absent request file without a reply is not labelled cancelled because that state is not authoritatively knowable.
+`pi-subagents` 0.37 defines only a reply file for supervisor requests. It has no native acknowledgement beyond the child consuming that reply. Forge therefore does not emulate a terminal pause or claim that a child processed a response.

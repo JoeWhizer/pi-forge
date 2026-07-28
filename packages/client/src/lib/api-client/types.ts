@@ -445,8 +445,9 @@ export interface SubagentFleetStopResponse {
   requestedAt: number;
 }
 
-export type SubagentSupervisorRequestStatus = "open" | "answered" | "cancelled" | "expired";
+export type SubagentSupervisorRequestStatus = "open" | "answered" | "expired";
 export type SubagentSupervisorRequestReason = "need_decision" | "interview_request";
+export type SubagentSupervisorDecision = "approved" | "rejected" | "no-decision";
 
 /** Exact correlation from pi-subagents 0.37 native supervisor request files. */
 export interface SubagentSupervisorRequest {
@@ -461,13 +462,16 @@ export interface SubagentSupervisorRequest {
   expiresAt?: number;
   message: string;
   interview?: unknown;
+  /** A Forge-recorded decision; terminal replies without Forge classification are no-decision. */
+  decision: SubagentSupervisorDecision;
   status: SubagentSupervisorRequestStatus;
   repliedAt?: number;
 }
 
 export interface SubagentSupervisorReplyResponse {
   accepted: true;
-  status: "answered" | "cancelled";
+  status: "answered";
+  decision: SubagentSupervisorDecision;
   repliedAt: number;
 }
 

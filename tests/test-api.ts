@@ -321,7 +321,9 @@ async function main(): Promise<void> {
         resolve(repoRoot, "packages/server/dist/subagents-external.js")
       )) as { SUBAGENTS_SUPERVISOR_CHANNEL_DIR: string };
       const requestId = randomUUID();
-      const declineId = randomUUID();
+      const approveId = randomUUID();
+      const interviewId = randomUUID();
+      const rejectId = randomUUID();
       const expiredId = randomUUID();
       const terminalId = randomUUID();
       const progressId = randomUUID();
@@ -355,8 +357,21 @@ async function main(): Promise<void> {
           "utf8",
         ),
         writeFile(
-          join(requestsDir, `${declineId}.json`),
-          JSON.stringify(request(declineId, Date.now() + 60_000)),
+          join(requestsDir, `${approveId}.json`),
+          JSON.stringify(request(approveId, Date.now() + 60_000)),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${interviewId}.json`),
+          JSON.stringify({
+            ...request(interviewId, Date.now() + 60_000),
+            reason: "interview_request",
+          }),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${rejectId}.json`),
+          JSON.stringify(request(rejectId, Date.now() + 60_000)),
           "utf8",
         ),
         writeFile(
@@ -448,8 +463,11 @@ async function main(): Promise<void> {
         jsend("POST", replyUrl, { message: "This must not overwrite the first reply." }, auth),
       ]);
       assert(
-        "native supervisor reply is atomic across raced browser submissions",
-        [firstReply.status, racedReply.status].sort().join(",") === "202,409",
+        "native supervisor reply is atomic across raced browser submissions and records no decision",
+        [firstReply.status, racedReply.status].sort().join(",") === "202,409" &&
+          [firstReply.body, racedReply.body].some(
+            (body) => (body as { decision?: string }).decision === "no-decision",
+          ),
         JSON.stringify({ firstReply, racedReply }),
       );
       const replyFile = JSON.parse(
@@ -484,8 +502,15 @@ async function main(): Promise<void> {
       const recovered = await jget(listUrl, auth);
       assert(
         "answered supervisor status persists after request-file cleanup and reload",
-        (recovered.body as { requests?: { requestId?: string; status?: string }[] }).requests?.some(
-          (item) => item.requestId === requestId && item.status === "answered",
+        (
+          recovered.body as {
+            requests?: { requestId?: string; status?: string; decision?: string }[];
+          }
+        ).requests?.some(
+          (item) =>
+            item.requestId === requestId &&
+            item.status === "answered" &&
+            item.decision === "no-decision",
         ) === true,
         JSON.stringify(recovered.body),
       );
@@ -505,9 +530,15 @@ async function main(): Promise<void> {
       assert(
         "vanished native request with matching reply is reconciled as answered",
         (
-          terminalRecovered.body as { requests?: { requestId?: string; status?: string }[] }
-        ).requests?.some((item) => item.requestId === terminalId && item.status === "answered") ===
-          true,
+          terminalRecovered.body as {
+            requests?: { requestId?: string; status?: string; decision?: string }[];
+          }
+        ).requests?.some(
+          (item) =>
+            item.requestId === terminalId &&
+            item.status === "answered" &&
+            item.decision === "no-decision",
+        ) === true,
         JSON.stringify(terminalRecovered.body),
       );
       assert(
@@ -518,18 +549,65 @@ async function main(): Promise<void> {
         JSON.stringify(terminalRecovered.body),
       );
 
-      const declined = await jsend("POST", `${listUrl}/${declineId}/decline`, {}, auth);
-      const declinedList = await jget(listUrl, auth);
+      const interviewDecision = await jsend("POST", `${listUrl}/${interviewId}/approve`, {}, auth);
       assert(
-        "native supervisor decline sends a safe reply and persists cancelled status",
-        declined.status === 202 &&
-          (declined.body as { status?: string }).status === "cancelled" &&
+        "native supervisor decisions reject interview requests instead of misclassifying them",
+        interviewDecision.status === 409 &&
+          (interviewDecision.body as { error?: string }).error === "request_not_decision",
+        JSON.stringify(interviewDecision.body),
+      );
+      const approved = await jsend("POST", `${listUrl}/${approveId}/approve`, {}, auth);
+      const approvedReply = JSON.parse(
+        await readFile(join(supervisorFixturePath, "replies", `${approveId}.json`), "utf8"),
+      ) as { message?: string; decision?: string };
+      const rejected = await jsend("POST", `${listUrl}/${rejectId}/reject`, {}, auth);
+      await writeFile(
+        join(supervisorFixturePath, "replies", `${approveId}.json`),
+        JSON.stringify({
+          type: "subagent.supervisor.reply",
+          requestId: approveId,
+          createdAt: Date.now(),
+          message: "terminal replacement after Forge approval",
+        }),
+        "utf8",
+      );
+      await rm(join(requestsDir, `${approveId}.json`));
+      const decidedList = await jget(listUrl, auth);
+      assert(
+        "native supervisor Approve sends a classified reply and persists it through terminal reconciliation",
+        approved.status === 202 &&
+          (approved.body as { status?: string; decision?: string }).status === "answered" &&
+          (approved.body as { decision?: string }).decision === "approved" &&
+          approvedReply.message === "Approved by supervisor." &&
+          approvedReply.decision === "approved" &&
           (
-            declinedList.body as { requests?: { requestId?: string; status?: string }[] }
+            decidedList.body as {
+              requests?: { requestId?: string; status?: string; decision?: string }[];
+            }
           ).requests?.some(
-            (item) => item.requestId === declineId && item.status === "cancelled",
+            (item) =>
+              item.requestId === approveId &&
+              item.status === "answered" &&
+              item.decision === "approved",
           ) === true,
-        JSON.stringify({ declined: declined.body, list: declinedList.body }),
+        JSON.stringify({ approved: approved.body, reply: approvedReply, list: decidedList.body }),
+      );
+      assert(
+        "native supervisor Reject records a rejected decision with answered transport state",
+        rejected.status === 202 &&
+          (rejected.body as { status?: string; decision?: string }).status === "answered" &&
+          (rejected.body as { decision?: string }).decision === "rejected" &&
+          (
+            decidedList.body as {
+              requests?: { requestId?: string; status?: string; decision?: string }[];
+            }
+          ).requests?.some(
+            (item) =>
+              item.requestId === rejectId &&
+              item.status === "answered" &&
+              item.decision === "rejected",
+          ) === true,
+        JSON.stringify({ rejected: rejected.body, list: decidedList.body }),
       );
       const expired = await jget(listUrl, auth);
       assert(
