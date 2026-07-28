@@ -34,6 +34,15 @@ async function main(): Promise<void> {
         "</button>\n          )}\n          <button\n            onClick={() => setSettingsOpen(true)}",
       ),
   );
+  const availabilityEffect = appSource.match(
+    /useEffect\(\(\) => \{([\s\S]*?)\}, \[activeSessionId\]\);/,
+  )?.[1];
+  assert(
+    "switching sessions clears fleet availability before its extension command lookup",
+    availabilityEffect !== undefined &&
+      availabilityEffect.indexOf("setSubagentFleetAvailable(false);") <
+        availabilityEffect.indexOf("api\n      .listExtensionCommands(activeSessionId)"),
+  );
 
   if (failures > 0) process.exitCode = 1;
 }

@@ -122,10 +122,10 @@ export function App() {
   const closeSubagentFleet = useUiStore((s) => s.closeSubagentFleet);
   const [subagentFleetAvailable, setSubagentFleetAvailable] = useState(false);
   useEffect(() => {
-    if (activeSessionId === undefined) {
-      setSubagentFleetAvailable(false);
-      return;
-    }
+    // A prior session may have exposed the fleet extension. Clear that result
+    // before resolving this session's command list so its icon cannot carry over.
+    setSubagentFleetAvailable(false);
+    if (activeSessionId === undefined) return;
     let cancelled = false;
     void api
       .listExtensionCommands(activeSessionId)
