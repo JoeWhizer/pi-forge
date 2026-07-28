@@ -67,6 +67,31 @@ async function main(): Promise<void> {
       fleetViewSource.includes("Reply to supervisor request") &&
       fleetViewSource.includes('aria-live="polite"'),
   );
+  const fleetStoreSource = await readFile(
+    resolve(repoRoot, "packages/client/src/store/subagent-fleet-store.ts"),
+    "utf8",
+  );
+  assert(
+    "Supervisor request cards are collapsed by default with persistent accessible expansion",
+    fleetViewSource.includes("expanded={expandedRequests[request.requestId] ?? false}") &&
+      fleetViewSource.includes("aria-expanded={expanded}") &&
+      fleetViewSource.includes("aria-controls={detailsId}") &&
+      fleetViewSource.includes("onToggleExpanded(request.requestId)") &&
+      fleetStoreSource.includes("expandedSupervisorRequests") &&
+      fleetStoreSource.includes("toggleSupervisorRequestExpanded"),
+  );
+  assert(
+    "Supervisor request cards give textual status and truthful pi-subagents delivery limits",
+    fleetViewSource.includes("Needs decision") &&
+      fleetViewSource.includes("Approved — reply sent") &&
+      fleetViewSource.includes("Rejected — decline sent") &&
+      fleetViewSource.includes("Answered — terminal reply observed") &&
+      fleetViewSource.includes("Expired") &&
+      fleetViewSource.includes("Reply error") &&
+      fleetViewSource.includes("pi-subagents does not") &&
+      fleetViewSource.includes("consumed or acted on a reply") &&
+      fleetViewSource.includes("needs a decision"),
+  );
   const supervisorRouteSource = await readFile(
     resolve(repoRoot, "packages/server/src/routes/subagent-fleet.ts"),
     "utf8",

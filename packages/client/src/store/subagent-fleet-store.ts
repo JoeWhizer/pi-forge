@@ -18,6 +18,7 @@ interface SubagentFleetState {
   stoppingRunIds: string[];
   expandedParents: Record<string, boolean>;
   expandedRuns: Record<string, boolean>;
+  expandedSupervisorRequests: Record<string, boolean>;
   loading: boolean;
   refreshing: boolean;
   lastRefreshedAt: number | undefined;
@@ -28,6 +29,7 @@ interface SubagentFleetState {
   stopRun: (runId: string) => Promise<void>;
   toggleParentExpanded: (parentKey: string, defaultExpanded: boolean) => void;
   toggleRunExpanded: (runId: string, defaultExpanded: boolean) => void;
+  toggleSupervisorRequestExpanded: (requestId: string) => void;
   startPolling: () => void;
   stopPolling: () => void;
 }
@@ -39,6 +41,7 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   stoppingRunIds: [],
   expandedParents: {},
   expandedRuns: {},
+  expandedSupervisorRequests: {},
   loading: false,
   refreshing: false,
   lastRefreshedAt: undefined,
@@ -117,6 +120,15 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   toggleRunExpanded: (runId, defaultExpanded) => {
     set((state) => ({
       expandedRuns: toggleSubagentFleetExpanded(state.expandedRuns, runId, defaultExpanded),
+    }));
+  },
+  toggleSupervisorRequestExpanded: (requestId) => {
+    set((state) => ({
+      expandedSupervisorRequests: toggleSubagentFleetExpanded(
+        state.expandedSupervisorRequests,
+        requestId,
+        false,
+      ),
     }));
   },
   startPolling: () => {
