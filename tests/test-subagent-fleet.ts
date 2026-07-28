@@ -206,7 +206,7 @@ async function main(): Promise<void> {
     assert(
       "Fleet projects submitted steering as queued before runner receipt",
       queuedRequest?.submittedAt === (queuedSteer.accepted ? queuedSteer.submittedAt : undefined) &&
-        queuedRequest.targets[0]?.state === "queued",
+        queuedRequest?.targets[0]?.state === "queued",
       JSON.stringify(queuedRequest),
     );
 
@@ -214,6 +214,7 @@ async function main(): Promise<void> {
     const activeStatus = JSON.parse(await readFile(activeStatusPath, "utf8")) as {
       lastActivityAt: number;
       steering?: unknown;
+      steps: { status?: string }[];
     };
     if (queuedSteer.accepted) {
       activeStatus.steering = {
@@ -251,6 +252,38 @@ async function main(): Promise<void> {
           (queuedSteer.accepted ? queuedSteer.submittedAt + 1_000 : undefined),
       JSON.stringify(acknowledgedRequest),
     );
+    await mkdir(join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "control"), { recursive: true });
+    await writeFile(
+      join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "control", "steer-inbox-closed.json"),
+      "{}",
+      "utf8",
+    );
+    const closedInboxSteer = await external.queueExternalSubagentSteer(
+      activeRunId,
+      "The runner already closed its steering inbox.",
+    );
+    assert(
+      "Fleet rejects steering a stale closed control inbox",
+      !closedInboxSteer.accepted && closedInboxSteer.code === "run_stale",
+      JSON.stringify(closedInboxSteer),
+    );
+
+    await rm(join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "control", "steer-inbox-closed.json"));
+    const runningSteps = activeStatus.steps;
+    activeStatus.steps = runningSteps.map((step) => ({ ...step, status: "complete" }));
+    await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
+    const noRunningChildSteer = await external.queueExternalSubagentSteer(
+      activeRunId,
+      "There is no running child.",
+    );
+    assert(
+      "Fleet rejects a running run with no running child",
+      !noRunningChildSteer.accepted && noRunningChildSteer.code === "run_stale",
+      JSON.stringify(noRunningChildSteer),
+    );
+    activeStatus.steps = runningSteps;
+    await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
+
     const terminalSteer = await external.queueExternalSubagentSteer(failedRunId, "too late");
     assert(
       "Fleet rejects steering terminal runs with an actionable status",

@@ -722,14 +722,9 @@ export async function queueExternalSubagentSteer(
       await mkdir(requestDir, { recursive: true });
       await writeFile(temporary, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
       await rename(temporary, target);
-      if (existsSync(join(asyncDir, "control", "steer-inbox-closed.json"))) {
-        await unlink(target).catch(() => undefined);
-        return {
-          accepted: false,
-          code: "run_stale",
-          message: `Run ${normalizedRunId} stopped accepting steering before the request was committed. Refresh Fleet and start a new run if it has ended.`,
-        };
-      }
+      // The runner can consume the request immediately after rename. Do not
+      // retract a committed request when its inbox closes concurrently: doing
+      // so could report rejection even though Pi already accepted the input.
       return { accepted: true, requestId, submittedAt };
     } catch {
       await unlink(temporary).catch(() => undefined);

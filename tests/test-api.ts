@@ -228,12 +228,21 @@ async function main(): Promise<void> {
         "utf8",
       );
 
-      const accepted = await jsend(
-        "POST",
-        `${base}/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`,
-        { text: "Visible steer request" },
-        auth,
+      const steerUrl = `${base}/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`;
+      const [blankSteer, oversizedSteer, extraFieldSteer] = await Promise.all([
+        jsend("POST", steerUrl, { text: "" }, auth),
+        jsend("POST", steerUrl, { text: "x".repeat(131_073) }, auth),
+        jsend("POST", steerUrl, { text: "Unexpected field", extra: true }, auth),
+      ]);
+      assert("POST Fleet steer rejects blank text schema → 400", blankSteer.status === 400);
+      assert("POST Fleet steer rejects oversized text schema → 400", oversizedSteer.status === 400);
+      assert(
+        "POST Fleet steer rejects extra fields schema → 400",
+        extraFieldSteer.status === 400,
+        JSON.stringify(extraFieldSteer),
       );
+
+      const accepted = await jsend("POST", steerUrl, { text: "Visible steer request" }, auth);
       assert("POST Fleet steer for exact running run → 202", accepted.status === 202);
       const acceptedBody = accepted.body as { requestId?: string; submittedAt?: number };
       const fleet = await jget(`${base}/api/v1/subagent-fleet?refresh=1`, auth);

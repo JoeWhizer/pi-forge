@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { config } from "../config.js";
 import {
   listExternalSubagentFleetRuns,
   queueExternalSubagentSteer,
@@ -109,6 +110,12 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { runId: string }; Body: { text: string } }>(
     "/subagent-fleet/:runId/steer",
     {
+      config: {
+        rateLimit: {
+          max: config.rateLimits.promptMax,
+          timeWindow: config.rateLimits.promptWindowMs,
+        },
+      },
       schema: {
         description:
           "Queue a steer for an exact running pi-subagents run without interrupting its current tool or turn.",
@@ -121,7 +128,9 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
         body: {
           type: "object",
           required: ["text"],
-          additionalProperties: false,
+          // Fastify's default validator silently removes unknown fields for
+          // `additionalProperties: false`; this equivalent rejects them.
+          additionalProperties: { not: {} },
           properties: { text: { type: "string", minLength: 1, maxLength: 131072 } },
         },
         response: {

@@ -394,9 +394,9 @@ leaving a request in a stale artifact. The request is atomically written to the
 pi-subagents 0.37 `control/steer-requests` file channel and the Fleet refreshes
 immediately. Forge does not modify the installed pi-subagents extension.
 
-Each request is retained on its exact Fleet run with its submission time and a
-transport status. **Queued for control channel** means Forge persisted the
-request but the runner has not recorded receipt. **Sent to child control inbox**
+Each exact Fleet run exposes a recent steering ledger of its last 20 requests,
+with submission time and transport status. **Queued for control channel** means
+Forge persisted the request but the runner has not recorded receipt. **Sent to child control inbox**
 means the runner forwarded it to the child Pi process. **Pi accepted input** is
 a real pi-subagents correlated acknowledgement: the child extension received
 Pi's `input` event for that message. It confirms input acceptance only; it does
