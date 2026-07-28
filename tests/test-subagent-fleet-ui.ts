@@ -34,8 +34,8 @@ async function main(): Promise<void> {
         "</button>\n          )}\n          <button\n            onClick={() => setSettingsOpen(true)}",
       ),
   );
-  const availabilityEffect = appSource.match(
-    /useEffect\(\(\) => \{([\s\S]*?)\}, \[activeSessionId\]\);/,
+  const availabilityEffect = /useEffect\(\(\) => \{([\s\S]*?)\}, \[activeSessionId\]\);/.exec(
+    appSource,
   )?.[1];
   assert(
     "switching sessions clears fleet availability before its extension command lookup",
