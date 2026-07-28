@@ -50,9 +50,10 @@ const chatInputSource = await readFile(
   new URL("../packages/client/src/components/ChatInput.tsx", import.meta.url),
   "utf8",
 );
-const plainTabHandler = /if \(e\.key === "Tab" && !e\.metaKey && !e\.ctrlKey && !e\.shiftKey && !e\.altKey\) \{\s*e\.preventDefault\(\);\s*slashCompleteSelected\(\);\s*return;\s*\}/s.exec(
-  chatInputSource,
-)?.[0];
+const plainTabHandler =
+  /if \(e\.key === "Tab" && !e\.metaKey && !e\.ctrlKey && !e\.shiftKey && !e\.altKey\) \{\s*e\.preventDefault\(\);\s*slashCompleteSelected\(\);\s*return;\s*\}/s.exec(
+    chatInputSource,
+  )?.[0];
 
 assert(
   "plain Tab completes and never dispatches the selected command",
