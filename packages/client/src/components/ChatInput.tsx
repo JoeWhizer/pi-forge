@@ -29,6 +29,11 @@ import { countRunning, selectProcesses, useProcessesStore } from "../store/proce
 import { extractClipboardImageFiles } from "../lib/clipboard-images";
 import { isChatSubmitShortcut } from "../lib/chat-input-keys";
 import { parseSkillInvocation } from "../lib/skill-command";
+import {
+  openSubagentFleetForCommand,
+  isSubagentFleetCommand,
+  SUBAGENT_FLEET_COMMANDS,
+} from "../lib/subagent-fleet-command";
 import { ProcessesPopover, TodosPopover } from "./InputPopovers";
 import { ComposerContextStatus } from "./ComposerContextStatus";
 import { CodexContextStatus } from "./CodexContextStatus";
@@ -665,12 +670,14 @@ export function ChatInput({ sessionId }: Props) {
         available: true,
         run: () => openSettings("providers"),
       },
-      {
-        name: "/subagent-fleet",
-        description: "Open the pi-subagents lifecycle fleet",
+      ...SUBAGENT_FLEET_COMMANDS.map((command) => ({
+        name: `/${command.name}`,
+        description: command.description,
         available: true,
-        run: () => openSubagentFleet(),
-      },
+        run: () => {
+          openSubagentFleetForCommand(command.name, openSubagentFleet);
+        },
+      })),
       {
         name: "/help",
         description: minimalUi
@@ -694,9 +701,9 @@ export function ChatInput({ sessionId }: Props) {
     // invocation into the editor; submit then uses the ordinary prompt route
     // so the SDK can run the handler immediately, including while streaming.
     for (const command of [...extensionCommands].reverse()) {
-      // Forge owns this read-only lifecycle view. Do not dispatch a same-named
-      // extension command through the opaque custom-UI bridge.
-      if (command.name === "subagent-fleet") continue;
+      // Forge owns these read-only lifecycle aliases. Do not dispatch the
+      // upstream terminal inspector through the opaque custom-UI bridge.
+      if (isSubagentFleetCommand(command.name)) continue;
       commands.unshift({
         name: `/${command.name}`,
         description: command.description ?? "Extension command",
@@ -817,7 +824,7 @@ export function ChatInput({ sessionId }: Props) {
     const spaceIndex = text.indexOf(" ");
     const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
     return extensionCommands.some(
-      (command) => command.name === name && command.name !== "subagent-fleet",
+      (command) => command.name === name && !isSubagentFleetCommand(command.name),
     );
   }, [slashOpen, text, extensionCommands]);
 

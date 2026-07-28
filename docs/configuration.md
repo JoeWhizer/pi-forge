@@ -359,12 +359,16 @@ or render path).
 ### pi-subagents lifecycle status
 
 Pi Forge provides a read-only `/subagent-fleet` view from the chat command
-palette. It reads pi-subagents lifecycle artifacts through an authenticated
-Forge API and groups runs by their stable `parentSessionId` and `runId`. Active
-and terminal runs remain visible with model, duration, and error details when
-the installed pi-subagents version records them. A child session can be opened
-through Forge's normal session navigation when the artifact contains a valid
-child session file.
+palette. `/subagents-fleet` is a Forge-native alias for the same browser panel:
+pi-subagents 0.37 registers that plural command for its terminal fleet
+inspector, which requests an interactive custom dialog Pi Forge does not
+emulate. Forge reserves both aliases for its browser view while leaving all
+other pi-subagents extension commands unchanged. It reads pi-subagents
+lifecycle artifacts through an authenticated Forge API and groups runs by their
+stable `parentSessionId` and `runId`. Active and terminal runs remain visible
+with model, duration, and error details when the installed pi-subagents version
+records them. A child session can be opened through Forge's normal session
+navigation when the artifact contains a valid child session file.
 
 Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
 request is not reliable. When an externally observed run reports `paused`,

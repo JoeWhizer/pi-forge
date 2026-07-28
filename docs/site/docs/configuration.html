@@ -628,6 +628,24 @@ Install with <code>pi install npm:pi-subagents</code>; pi-forge picks it up with
 no extra config and renders the result as a rich card in the chat
 (integration detail in <code>CLAUDE.md</code> if you&#39;re modifying the discovery
 or render path).</p>
+<h3>pi-subagents lifecycle status</h3>
+<p>Pi Forge provides a read-only <code>/subagent-fleet</code> view from the chat command
+palette. <code>/subagents-fleet</code> is a Forge-native alias for the same browser panel:
+pi-subagents 0.37 registers that plural command for its terminal fleet
+inspector, which requests an interactive custom dialog Pi Forge does not
+emulate. Forge reserves both aliases for its browser view while leaving all
+other pi-subagents extension commands unchanged. It reads pi-subagents
+lifecycle artifacts through an authenticated Forge API and groups runs by their
+stable <code>parentSessionId</code> and <code>runId</code>. Active and terminal runs remain visible
+with model, duration, and error details when the installed pi-subagents version
+records them. A child session can be opened through Forge&#39;s normal session
+navigation when the artifact contains a valid child session file.</p>
+<p>Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
+request is not reliable. When an externally observed run reports <code>paused</code>,
+Forge retains it as a non-spinning lifecycle status. Running, stopped,
+complete, and failed status indicators remain available. The fleet currently
+polls while open; artifacts with missing parent/child session metadata remain
+visible but cannot offer session navigation.</p>
 <h2>Docker bind mounts</h2>
 <p>The shipped <code>docker-compose.yml</code> mounts these paths by default:</p>
 <table>
