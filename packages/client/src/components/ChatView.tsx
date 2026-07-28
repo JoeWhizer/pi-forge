@@ -49,6 +49,7 @@ import { placeChatTimelineItems, type ChatTimelinePosition } from "../lib/chat-t
 import { parseSubagentDetails, type SubagentResult } from "../lib/subagent-parser";
 import {
   supervisorDecisionFromForgeReplyEvent,
+  supervisorDecisionFromSupervisorToolResult,
   supervisorDecisionFromValue,
   supervisorDecisionPresentation,
 } from "../lib/subagent-supervisor-decision";
@@ -2225,7 +2226,7 @@ function ToolCallEntry({
       <SupervisorReplyCard
         requestId={requestId}
         message={reply}
-        decision="no-decision"
+        decision={supervisorDecisionFromSupervisorToolResult(result?.details)}
         text={outputText}
       />
     );
@@ -2410,7 +2411,12 @@ function ToolResult({ message }: { message: AgentMessageLike }) {
         : {};
     const requestId = typeof details.replyTo === "string" ? details.replyTo : "unknown";
     return (
-      <SupervisorReplyCard requestId={requestId} message="" decision="no-decision" text={text} />
+      <SupervisorReplyCard
+        requestId={requestId}
+        message=""
+        decision={supervisorDecisionFromSupervisorToolResult(details)}
+        text={text}
+      />
     );
   }
 

@@ -68,6 +68,9 @@ async function main(): Promise<void> {
       workspacePath: string,
     ) => Promise<{ session: { messages: readonly unknown[] } }>;
   };
+  const sse = (await import(resolve(repoRoot, "packages/server/dist/sse-bridge.js"))) as {
+    buildSnapshot: (live: unknown) => { messages: readonly unknown[] };
+  };
   const runId = `supervisor-${randomUUID()}`;
   const requestId = randomUUID();
   const validChannel = join(external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR, `${runId}-worker-0`);
@@ -252,6 +255,7 @@ async function main(): Promise<void> {
           value.customType === "subagent_supervisor_reply" &&
           value.content === replyMessage &&
           value.details?.source === "pi-forge" &&
+          value.details.kind === "supervisor-reply" &&
           value.details.decision === decision &&
           value.details.requestId === request.requestId &&
           value.details.parentSessionId === request.parentSessionId &&
@@ -306,11 +310,6 @@ async function main(): Promise<void> {
       stopReason: "stop",
       timestamp: Date.now(),
     });
-    // As with approval, reject after disposal so only durable history can
-    // restore the browser reply card during the genuine cold resume path.
-    await registry.disposeSession(rejectedParent.sessionId);
-    await new Promise((resolve) => setTimeout(resolve, 1_600));
-
     const rejectId = randomUUID();
     const rejectRunId = `supervisor-reject-${randomUUID()}`;
     const rejectChannel = join(
@@ -341,17 +340,29 @@ async function main(): Promise<void> {
       rejectReply,
       "rejected",
     );
+    const liveRejectionSnapshot = sse.buildSnapshot(rejectedParent);
     await rm(join(rejectChannel, "requests", `${rejectId}.json`));
     const fleetAfterRejectNativeCleanup = await external.listExternalSupervisorRequests();
+    await registry.disposeSession(rejectedParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
     const rejectedResumed = await registry.resumeSession(
       rejectedParent.sessionId,
       project.id,
       fixtureDir,
     );
+    const rejectedRequest = {
+      requestId: rejectId,
+      parentSessionId: rejectedParent.sessionId,
+      runId: rejectRunId,
+      agent: "worker",
+      childIndex: 0,
+    };
     assert(
-      "cold parent resume restores the native-cleaned browser rejection as an authoritative Chat and Fleet result",
+      "live event, reload snapshot, and cold resume preserve the native-cleaned browser rejection",
       rejected.accepted &&
         rejected.decision === "rejected" &&
+        hasBrowserCard(rejectedParent.session.messages, rejectedRequest, rejectReply, "rejected") &&
+        hasBrowserCard(liveRejectionSnapshot.messages, rejectedRequest, rejectReply, "rejected") &&
         fleetAfterRejectNativeCleanup.some(
           (request) =>
             request.runId === rejectRunId &&
@@ -360,25 +371,84 @@ async function main(): Promise<void> {
             request.decision === "rejected" &&
             request.replyMessage === rejectReply,
         ) &&
-        hasBrowserCard(
-          rejectedResumed.session.messages,
-          {
-            requestId: rejectId,
-            parentSessionId: rejectedParent.sessionId,
-            runId: rejectRunId,
-            agent: "worker",
-            childIndex: 0,
-          },
-          rejectReply,
-          "rejected",
-        ),
+        hasBrowserCard(rejectedResumed.session.messages, rejectedRequest, rejectReply, "rejected"),
       JSON.stringify({
         fleetAfterRejectNativeCleanup,
-        messages: rejectedResumed.session.messages,
+        liveMessages: rejectedParent.session.messages,
+        snapshotMessages: liveRejectionSnapshot.messages,
+        resumedMessages: rejectedResumed.session.messages,
       }),
+    );
+    const legacyParent = await registry.createSession(project.id, fixtureDir);
+    legacyParent.session.sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "legacy supervisor fixture", id: "fixture" }],
+      api: "messages",
+      provider: "anthropic",
+      model: "test-fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+    await registry.disposeSession(legacyParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    const legacyRequestId = randomUUID();
+    const legacyRunId = `supervisor-legacy-${randomUUID()}`;
+    const legacyCreatedAt = Date.now();
+    await writeFile(
+      join(fixtureDir, "data", "subagent-supervisor-requests.json"),
+      JSON.stringify({
+        requests: [
+          {
+            requestId: legacyRequestId,
+            parentSessionId: legacyParent.sessionId,
+            runId: legacyRunId,
+            agent: "worker",
+            childIndex: 0,
+            reason: "need_decision",
+            expectsReply: true,
+            createdAt: legacyCreatedAt,
+            expiresAt: legacyCreatedAt + 60_000,
+            message: "Legacy classified decision.",
+            decision: "rejected",
+            status: "answered",
+            repliedAt: legacyCreatedAt + 1,
+          },
+        ],
+      }),
+      "utf8",
+    );
+    const legacyResumed = await registry.resumeSession(
+      legacyParent.sessionId,
+      project.id,
+      fixtureDir,
+    );
+    assert(
+      "legacy persisted rejection without reply text replays as an English classified Chat card",
+      hasBrowserCard(
+        legacyResumed.session.messages,
+        {
+          requestId: legacyRequestId,
+          parentSessionId: legacyParent.sessionId,
+          runId: legacyRunId,
+          agent: "worker",
+          childIndex: 0,
+        },
+        "Rejected by supervisor.",
+        "rejected",
+      ),
+      JSON.stringify(legacyResumed.session.messages),
     );
     await registry.disposeSession(parent.sessionId);
     await registry.disposeSession(rejectedParent.sessionId);
+    await registry.disposeSession(legacyParent.sessionId);
     await rm(replayChannel, { recursive: true, force: true });
     await rm(reusedChannel, { recursive: true, force: true });
     await rm(rejectChannel, { recursive: true, force: true });

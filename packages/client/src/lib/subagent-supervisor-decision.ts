@@ -50,15 +50,28 @@ export function supervisorDecisionPresentation(value: unknown): SupervisorDecisi
 }
 
 /**
- * Browser replies are the sole chat events that carry Forge's durable decision
- * classification. Native tool result metadata deliberately has no decision.
+ * Forge persists browser decisions in custom reply metadata. Earlier persisted
+ * reply cards predate the `kind` discriminator, so source plus the exact enum
+ * remains the compatibility contract. Message text is never classification input.
  */
 export function supervisorDecisionFromForgeReplyEvent(
   details: unknown,
 ): SubagentSupervisorDecision {
   if (typeof details !== "object" || details === null) return NO_SUPERVISOR_DECISION;
   const value = details as Record<string, unknown>;
-  return value.source === "pi-forge" && value.kind === "supervisor-reply"
+  return value.source === "pi-forge" &&
+    (value.kind === "supervisor-reply" || value.kind === undefined)
     ? supervisorDecisionFromValue(value.decision)
     : NO_SUPERVISOR_DECISION;
+}
+
+/**
+ * `subagent_supervisor` is a trusted extension result boundary. Its optional
+ * decision field is durable protocol metadata, unlike its localized text body.
+ */
+export function supervisorDecisionFromSupervisorToolResult(
+  details: unknown,
+): SubagentSupervisorDecision {
+  if (typeof details !== "object" || details === null) return NO_SUPERVISOR_DECISION;
+  return supervisorDecisionFromValue((details as Record<string, unknown>).decision);
 }

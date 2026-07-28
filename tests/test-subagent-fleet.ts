@@ -23,6 +23,7 @@ import type {
 } from "../packages/client/src/lib/api-client/types";
 import {
   supervisorDecisionFromForgeReplyEvent,
+  supervisorDecisionFromSupervisorToolResult,
   supervisorDecisionFromValue,
   supervisorDecisionPresentation,
 } from "../packages/client/src/lib/subagent-supervisor-decision";
@@ -124,6 +125,28 @@ async function main(): Promise<void> {
       fleetViewSource.includes("Answered — reply observed"),
   );
   assert(
+    "Portal supervisor, Fleet lifecycle, and control status labels are English",
+    [
+      "Approved",
+      "Rejected",
+      "No decision recorded",
+      "Reply sent",
+      "Needs response",
+      "Pending interview",
+      "Answered — reply observed",
+      "Expired",
+      "Queued for control channel",
+      "Scheduled",
+      "Sent to child control inbox",
+      "Pi accepted input",
+      "Delivery failed",
+      "Recovered by pi-subagents",
+    ].every((label) => decisionModelSource.includes(label) || fleetViewSource.includes(label)) &&
+      !/\b(Genehmigt|Abgelehnt|Verworfen|Ausstehend|Wartend|Gesendet|Fehlgeschlagen)\b/.test(
+        `${decisionModelSource}\n${fleetViewSource}`,
+      ),
+  );
+  assert(
     "Supervisor request hierarchy has non-color-only structure and truthful delivery limits",
     fleetViewSource.includes("border-2 border-amber-700/80") &&
       fleetViewSource.includes("border-l-4 border-neutral-600") &&
@@ -169,7 +192,7 @@ async function main(): Promise<void> {
   );
 
   assert(
-    "Chat and Fleet use the exact same metadata-only decision model",
+    "Chat and Fleet classify only persisted decision enums for live, legacy, and tool-result metadata",
     supervisorDecisionFromValue("approved") === "approved" &&
       supervisorDecisionFromValue("Rejected in arbitrary free text") === "no-decision" &&
       supervisorDecisionFromForgeReplyEvent({
@@ -178,15 +201,22 @@ async function main(): Promise<void> {
         decision: "rejected",
       }) === "rejected" &&
       supervisorDecisionFromForgeReplyEvent({
-        replyTo: "native-tool-request",
+        source: "pi-forge",
         decision: "approved",
-        message: "Approved in arbitrary native metadata",
+      }) === "approved" &&
+      supervisorDecisionFromSupervisorToolResult({ decision: "approved" }) === "approved" &&
+      supervisorDecisionFromSupervisorToolResult({
+        decision: "Genehmigt",
+        message: "Approved in arbitrary free text",
       }) === "no-decision" &&
       supervisorDecisionPresentation("approved").label === "Approved" &&
+      supervisorDecisionPresentation("approved").className.includes("emerald") &&
       supervisorDecisionPresentation("rejected").label === "Rejected" &&
+      supervisorDecisionPresentation("rejected").className.includes("red") &&
       supervisorDecisionPresentation("unexpected").label === "No decision recorded" &&
+      supervisorDecisionPresentation("unexpected").className.includes("neutral") &&
       chatViewSource.includes('message.customType === "subagent_supervisor_reply"') &&
-      chatViewSource.includes('decision="no-decision"'),
+      chatViewSource.includes("supervisorDecisionFromSupervisorToolResult"),
   );
   assert(
     "Fleet stop confirmation remains a single modal state with accessible cancellation",

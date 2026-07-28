@@ -676,14 +676,26 @@ function hasForgeSupervisorReplyMessage(
  * was missed while the parent was not in the registry.
  */
 async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): Promise<void> {
-  if (request.replySource !== "forge-browser" || request.replyMessage === undefined) return;
+  if (request.replySource !== "forge-browser") return;
+  const decision = persistedSupervisorDecision(request.decision);
+  // Historic Forge decisions did not retain reply text. Rehydrate those
+  // records with a fixed English label from the durable enum, never by
+  // interpreting the old native reply body.
+  const content =
+    request.replyMessage ??
+    (decision === "approved"
+      ? "Approved by supervisor."
+      : decision === "rejected"
+        ? "Rejected by supervisor."
+        : undefined);
+  if (content === undefined) return;
   const live = getSession(request.parentSessionId);
   if (live === undefined || hasForgeSupervisorReplyMessage(live.session.messages, request)) return;
   try {
     await live.session.sendCustomMessage(
       {
         customType: SUPERVISOR_REPLY_CUSTOM_TYPE,
-        content: request.replyMessage,
+        content,
         display: true,
         details: {
           source: "pi-forge",
@@ -693,7 +705,7 @@ async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): 
           runId: request.runId,
           agent: request.agent,
           childIndex: request.childIndex,
-          decision: persistedSupervisorDecision(request.decision),
+          decision,
           repliedAt: request.repliedAt,
         },
       },
