@@ -395,3 +395,18 @@ export function invalidateSessionIndex(projectId: string): void {
   const cache = projects.get(projectId);
   if (cache !== undefined) cache.dirty = true;
 }
+
+/**
+ * Remove one project's derived discovery cache and force its next lookup to
+ * rebuild from JSONL. This intentionally never touches the session directory.
+ */
+export async function resetSessionIndex(projectId: string): Promise<void> {
+  await ensureLoaded();
+  const cache = projects.get(projectId);
+  if (cache !== undefined) {
+    for (const watcher of cache.watchers) watcher.close();
+    projects.delete(projectId);
+  }
+  delete persisted.projects[projectId];
+  await atomicWriteIndex();
+}

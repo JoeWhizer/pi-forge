@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   AgentSession,
@@ -71,7 +71,11 @@ import {
   type UnsupportedExtensionDialog,
 } from "./extension-ui-attribution.js";
 import { publishSessionActivity, type SessionActivity } from "./session-activity.js";
-import { getIndexedProjectSessions, invalidateSessionIndex } from "./session-index.js";
+import {
+  getIndexedProjectSessions,
+  invalidateSessionIndex,
+  resetSessionIndex,
+} from "./session-index.js";
 
 /**
  * Minimal SSE client contract used by the registry to fan out events.
@@ -1761,6 +1765,15 @@ export async function discoverSessionsOnDisk(
   );
 }
 
+/** Reset only the derived discovery index, then rebuild this project's listing from JSONL. */
+export async function refreshProjectSessionIndex(
+  projectId: string,
+  workspacePath: string,
+): Promise<DiscoveredSession[]> {
+  await resetSessionIndex(projectId);
+  return discoverSessionsOnDisk(projectId, workspacePath);
+}
+
 /** JSONL source-of-truth scan used exclusively to rebuild the session index. */
 async function discoverSessionsOnDiskUncached(
   projectId: string,
@@ -1912,11 +1925,19 @@ async function discoverSubagentChildSessions(
     // symlink loops without needing a visited-set.
     const sessionDirs = await collectJsonlDirs(parentDir, 0, 4);
     for (const sd of sessionDirs) {
-      let infos: SessionInfo[];
+      let infos: SessionInfo[] = [];
       try {
         infos = await SessionManager.list(workspacePath, sd);
       } catch {
-        continue;
+        // A malformed sibling must not suppress the literal child fallback.
+      }
+      // pi-subagents parallel runs use a literal `run-N/session.jsonl`.
+      // SessionManager.list intentionally filters filenames it does not
+      // recognize, so read that one bounded header directly instead of
+      // opening it (which can migrate or rewrite source JSONL files).
+      const literalChild = await readLiteralChildSession(sd);
+      if (literalChild !== undefined && !infos.some((info) => info.path === literalChild.path)) {
+        infos = [...infos, literalChild];
       }
       // Reconstruct runId from path segments between parentDir and sd.
       // Single segment → that's the runId. Multiple segments
@@ -1942,6 +1963,50 @@ async function discoverSubagentChildSessions(
     }
   }
   return out;
+}
+
+/**
+ * Read only the first 64 KiB of a literal pi-subagents child file. This is a
+ * non-mutating counterpart to SessionManager.list for `run-N/session.jsonl`.
+ */
+async function readLiteralChildSession(dir: string): Promise<SessionInfo | undefined> {
+  if (!/^run-\d+$/.test(basename(dir))) return undefined;
+  const path = join(dir, "session.jsonl");
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const lineEnd = buffer.subarray(0, bytesRead).indexOf(0x0a);
+    if (lineEnd < 0) return undefined;
+    const header: unknown = JSON.parse(buffer.subarray(0, lineEnd).toString("utf8"));
+    if (typeof header !== "object" || header === null) return undefined;
+    const value = header as Record<string, unknown>;
+    if (
+      value.type !== "session" ||
+      typeof value.id !== "string" ||
+      typeof value.cwd !== "string" ||
+      typeof value.timestamp !== "string" ||
+      Number.isNaN(Date.parse(value.timestamp))
+    ) {
+      return undefined;
+    }
+    const info = await stat(path);
+    return {
+      id: value.id,
+      path,
+      cwd: value.cwd,
+      created: new Date(value.timestamp),
+      modified: info.mtime,
+      messageCount: 0,
+      firstMessage: "",
+      allMessagesText: "",
+    };
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
 }
 
 /**

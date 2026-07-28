@@ -50,6 +50,7 @@ async function main(): Promise<void> {
   };
 
   await mkdir(dirname(record.path), { recursive: true });
+  await writeFile(record.path, '{"type":"session"}\n', "utf8");
 
   const index = (await import(
     resolve(repoRoot, "packages/server/dist/session-index.js")
@@ -93,9 +94,26 @@ async function main(): Promise<void> {
         stored?.path === record.path,
     );
 
+    const sourceBeforeReset = await readFile(join(dataDir, "session-index.json"), "utf8");
+    const sessionSourceBeforeReset = await readFile(record.path, "utf8");
     index.invalidateSessionIndex(projectId);
     await index.getIndexedProjectSessions(projectId, sessionDir, projectSessionDir, discover);
     assert("explicit invalidation rebuilds on next lookup", scans === 2);
+
+    await index.resetSessionIndex(projectId);
+    const afterReset = JSON.parse(await readFile(join(dataDir, "session-index.json"), "utf8")) as {
+      projects?: Record<string, unknown>;
+    };
+    assert(
+      "reset removes only the persisted project cache entry",
+      sourceBeforeReset.length > 0 && afterReset.projects?.[projectId] === undefined,
+    );
+    assert(
+      "reset does not alter session source files",
+      (await readFile(record.path, "utf8")) === sessionSourceBeforeReset,
+    );
+    await index.getIndexedProjectSessions(projectId, sessionDir, projectSessionDir, discover);
+    assert("reset forces the next lookup to rebuild", scans === 3);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
     await rm(sessionDir, { recursive: true, force: true });

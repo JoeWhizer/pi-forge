@@ -841,15 +841,20 @@ async function main(): Promise<void> {
       deepBasename,
       deepRunId,
       "run-0",
-      `${deepChildId}.jsonl`,
+      "session.jsonl",
     );
     await writeChildSessionFile(deepChildPath, deepChildId, project.path);
+    const literalChildSource = await readFile(deepChildPath, "utf8");
     const reDeep = await registry.discoverSessionsOnDisk(project.id, project.path);
     const deepChildEntry = reDeep.find((d) => d.sessionId === deepChildId);
     assert(
-      "deep-layout child (basename/runId/run-N/session.jsonl) was discovered",
+      "literal deep-layout child (basename/runId/run-N/session.jsonl) was discovered",
       deepChildEntry !== undefined,
       `child id=${deepChildId} not in ${reDeep.map((d) => d.sessionId).join(",")}`,
+    );
+    assert(
+      "literal child discovery does not rewrite the source JSONL",
+      (await readFile(deepChildPath, "utf8")) === literalChildSource,
     );
     assert(
       "deep-layout child's parentSessionId resolves via basename map",

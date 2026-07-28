@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import { Plus, X, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
+import { Plus, X, ChevronDown, ChevronRight, GripVertical, RefreshCw } from "lucide-react";
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
 import { useUiConfigStore } from "../store/ui-config-store";
@@ -28,6 +28,7 @@ export function ProjectSidebar({ className = "", style }: ProjectSidebarProps = 
   const sessionsByProject = useSessionStore((s) => s.byProject);
   const createSession = useSessionStore((s) => s.createSession);
   const disposeSession = useSessionStore((s) => s.disposeSession);
+  const refreshProjectSessionIndex = useSessionStore((s) => s.refreshProjectSessionIndex);
   const version = useUiConfigStore((s) => s.version);
   const buildCommit = useUiConfigStore((s) => s.buildCommit);
   const deploymentBranch = useUiConfigStore((s) => s.deploymentBranch);
@@ -52,6 +53,21 @@ export function ProjectSidebar({ className = "", style }: ProjectSidebarProps = 
     }
   };
   const [showPicker, setShowPicker] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFeedback, setRefreshFeedback] = useState<"success" | "error" | undefined>();
+  const handleRefresh = async (): Promise<void> => {
+    if (activeProjectId === undefined || refreshing) return;
+    setRefreshing(true);
+    setRefreshFeedback(undefined);
+    try {
+      await refreshProjectSessionIndex(activeProjectId);
+      setRefreshFeedback("success");
+    } catch {
+      setRefreshFeedback("error");
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameValue, setRenameValue] = useState("");
   const [draggingProjectId, setDraggingProjectId] = useState<string | undefined>();
@@ -165,12 +181,44 @@ export function ProjectSidebar({ className = "", style }: ProjectSidebarProps = 
         <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
           Projects
         </span>
-        <button
-          onClick={() => setShowPicker(true)}
-          className="rounded-md border border-neutral-700 px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-800"
-        >
-          + New
-        </button>
+        <div className="flex items-center gap-1">
+          <span
+            aria-live="polite"
+            className={`text-[10px] ${
+              refreshFeedback === "error" ? "text-red-400" : "text-neutral-400"
+            }`}
+          >
+            {refreshing
+              ? "Refreshing…"
+              : refreshFeedback === "success"
+                ? "Refreshed"
+                : refreshFeedback === "error"
+                  ? "Refresh failed"
+                  : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleRefresh()}
+            disabled={activeProjectId === undefined || refreshing}
+            aria-label="Refresh active project session index"
+            title={
+              activeProjectId === undefined
+                ? "Select a project to refresh its session index"
+                : refreshing
+                  ? "Refreshing session index…"
+                  : "Refresh session index"
+            }
+            className="inline-flex rounded-md border border-neutral-700 p-1 text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+          </button>
+          <button
+            onClick={() => setShowPicker(true)}
+            className="rounded-md border border-neutral-700 px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-800"
+          >
+            + New
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto py-1">
