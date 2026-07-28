@@ -141,9 +141,10 @@ async function main(): Promise<void> {
       projectSessionDir,
       discover,
     );
+    const refreshedScanCount: number = scans;
     assert(
       "delayed stale rebuild cannot repopulate a reset generation",
-      scans === 5 && refreshed[0]?.sessionId === "fresh-session",
+      refreshedScanCount === 5 && refreshed[0]?.sessionId === "fresh-session",
     );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
