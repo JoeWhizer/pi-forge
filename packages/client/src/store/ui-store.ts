@@ -119,7 +119,7 @@ interface UiState {
   openEditorPaneSeq: number;
   openEditorPane: () => void;
 
-  /** Read-only pi-subagents fleet view, opened by the `/subagent-fleet` command. */
+  /** Read-only pi-subagents fleet view, opened by the `/subagents-fleet` command. */
   subagentFleetOpen: boolean;
   openSubagentFleet: () => void;
   closeSubagentFleet: () => void;

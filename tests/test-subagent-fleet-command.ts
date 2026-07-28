@@ -16,9 +16,12 @@ function assert(label: string, ok: boolean, detail?: string): void {
 
 function main(): void {
   assert(
-    "fleet command map includes singular and pi-subagents plural aliases",
-    SUBAGENT_FLEET_COMMANDS.map((command) => command.name).join(",") ===
-      "subagent-fleet,subagents-fleet",
+    "fleet command map includes only the pi-subagents plural command",
+    SUBAGENT_FLEET_COMMANDS.map((command) => command.name).join(",") === "subagents-fleet",
+  );
+  assert(
+    "Forge-invented singular command is not intercepted",
+    !isSubagentFleetCommand("subagent-fleet"),
   );
   assert("fleet command map excludes unrelated extension commands", !isSubagentFleetCommand("run"));
   assert(
@@ -40,6 +43,14 @@ function main(): void {
   }
 
   useUiStore.getState().closeSubagentFleet();
+  const singularOpened = openSubagentFleetForCommand("subagent-fleet", () =>
+    useUiStore.getState().openSubagentFleet(),
+  );
+  assert(
+    "Forge-invented singular command does not open the Forge fleet panel",
+    !singularOpened && !useUiStore.getState().subagentFleetOpen,
+  );
+
   const unrelatedOpened = openSubagentFleetForCommand("subagents-stop", () =>
     useUiStore.getState().openSubagentFleet(),
   );

@@ -701,7 +701,7 @@ export function ChatInput({ sessionId }: Props) {
     // invocation into the editor; submit then uses the ordinary prompt route
     // so the SDK can run the handler immediately, including while streaming.
     for (const command of [...extensionCommands].reverse()) {
-      // Forge owns these read-only lifecycle aliases. Do not dispatch the
+      // Forge owns this read-only lifecycle command. Do not dispatch the
       // upstream terminal inspector through the opaque custom-UI bridge.
       if (isSubagentFleetCommand(command.name)) continue;
       commands.unshift({
