@@ -106,7 +106,6 @@ async function main(): Promise<void> {
       message: string,
       decision: "approved" | "rejected" | "no-decision",
     ) => Promise<{ accepted: boolean; decision?: string }>;
-    replayForgeSupervisorRepliesForSession: (sessionId: string) => Promise<void>;
   };
   const projects = (await import(resolve(repoRoot, "packages/server/dist/project-manager.js"))) as {
     createProject: (name: string, path: string) => Promise<{ id: string }>;
@@ -558,6 +557,91 @@ async function main(): Promise<void> {
       JSON.stringify({ fleetAfterTerminalReply, terminalRawDetails }),
     );
     await rm(terminalChannel, { recursive: true, force: true });
+
+    const ambiguousParent = await registry.createSession(project.id, fixtureDir);
+    const ambiguousRequestId = randomUUID();
+    const ambiguousRunId = `supervisor-ambiguous-${randomUUID()}`;
+    const ambiguousCreatedAt = Date.now();
+    appendRawNativeSupervisorReply(ambiguousParent.session, {
+      requestId: ambiguousRequestId,
+      runId: ambiguousRunId,
+      agent: "worker",
+    });
+    // Native tool results omit childIndex. A decided tuple must therefore not
+    // win over another persisted tuple that shares every visible native field.
+    await writeFile(
+      join(fixtureDir, "data", "subagent-supervisor-requests.json"),
+      JSON.stringify({
+        requests: [
+          {
+            requestId: ambiguousRequestId,
+            parentSessionId: ambiguousParent.sessionId,
+            runId: ambiguousRunId,
+            agent: "worker",
+            childIndex: 0,
+            reason: "need_decision",
+            expectsReply: true,
+            createdAt: ambiguousCreatedAt,
+            expiresAt: ambiguousCreatedAt + 60_000,
+            message: "Explicit browser approval.",
+            decision: "approved",
+            status: "answered",
+            repliedAt: ambiguousCreatedAt + 1,
+            replyMessage: "Approved in Forge.",
+            replySource: "forge-browser",
+          },
+          {
+            requestId: ambiguousRequestId,
+            parentSessionId: ambiguousParent.sessionId,
+            runId: ambiguousRunId,
+            agent: "worker",
+            childIndex: 1,
+            reason: "need_decision",
+            expectsReply: true,
+            createdAt: ambiguousCreatedAt,
+            expiresAt: ambiguousCreatedAt + 60_000,
+            message: "Still open for another child.",
+            decision: "no-decision",
+            status: "open",
+          },
+          {
+            requestId: ambiguousRequestId,
+            parentSessionId: ambiguousParent.sessionId,
+            runId: ambiguousRunId,
+            agent: "worker",
+            childIndex: 2,
+            reason: "need_decision",
+            expectsReply: true,
+            createdAt: ambiguousCreatedAt,
+            expiresAt: ambiguousCreatedAt + 60_000,
+            message: "Terminal reply for another child.",
+            decision: "no-decision",
+            status: "answered",
+            repliedAt: ambiguousCreatedAt + 2,
+            replyMessage: "Terminal reply without a Forge decision.",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await registry.disposeSession(ambiguousParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    const ambiguousResumed = await registry.resumeSession(
+      ambiguousParent.sessionId,
+      project.id,
+      fixtureDir,
+    );
+    const ambiguousRawDetails = rawNativeSupervisorDecision(
+      ambiguousResumed.session.messages,
+      ambiguousRequestId,
+    );
+    assert(
+      "raw supervisor result stays neutral when matching persisted tuples differ only by child index",
+      ambiguousRawDetails !== undefined &&
+        (ambiguousRawDetails as Record<string, unknown>).forgeDecision === undefined,
+      JSON.stringify(ambiguousRawDetails),
+    );
+    await registry.disposeSession(ambiguousParent.sessionId);
 
     const legacyParent = await registry.createSession(project.id, fixtureDir);
     legacyParent.session.sessionManager.appendMessage({

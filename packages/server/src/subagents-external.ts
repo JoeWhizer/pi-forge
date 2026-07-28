@@ -684,20 +684,24 @@ function enrichForgeSupervisorToolResults(
       !isCanonicalSupervisorString(agent, 256)
     )
       continue;
+    // childIndex is absent from the native result. Inspect every persisted
+    // tuple sharing its native-visible fields before considering a decision:
+    // an open, terminal, no-decision, or different-child tuple is ambiguous.
     const matches = history.filter(
       (request) =>
-        request.status === "answered" &&
         request.parentSessionId === parentSessionId &&
         request.requestId === replyTo &&
         request.runId === runId &&
-        request.agent === agent &&
-        persistedSupervisorDecision(request.decision) !== "no-decision" &&
-        persistedSupervisorRequestFor(history, request) !== undefined,
+        request.agent === agent,
     );
-    // childIndex is absent from the native result. Refuse to classify unless
-    // the available native fields identify exactly one complete tuple.
     if (matches.length !== 1) continue;
     const request = matches[0]!;
+    if (
+      request.status !== "answered" ||
+      persistedSupervisorDecision(request.decision) === "no-decision" ||
+      persistedSupervisorRequestFor(history, request) === undefined
+    )
+      continue;
     try {
       Object.assign(details, {
         forgeDecision: persistedSupervisorDecision(request.decision),
