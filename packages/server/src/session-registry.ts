@@ -1,4 +1,5 @@
-import { mkdir, open, readdir, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   AgentSession,
@@ -1929,31 +1930,32 @@ async function discoverSubagentChildSessions(
     // symlink loops without needing a visited-set.
     const sessionDirs = await collectJsonlDirs(parentDir, 0, 4);
     for (const sd of sessionDirs) {
-      let infos: SessionInfo[] = [];
-      try {
-        infos = await SessionManager.list(workspacePath, sd);
-      } catch {
-        // A malformed sibling must not suppress the literal child fallback.
-      }
       // pi-subagents parallel runs use a literal `run-N/session.jsonl`.
-      // Apply the same header validation whether the SDK happened to return
-      // it or we need the bounded non-mutating fallback below.
+      // Never pass that filename through the SDK scanner: it follows symlinks,
+      // while child discovery must reject a literal child symlink before any
+      // content is read. The bounded reader below opens it with O_NOFOLLOW.
       const literalPath = join(sd, "session.jsonl");
-      const allowConfiguredRootCwd = isExactKnownLiteralRun(
+      const allowConfiguredRootCwd = await isExactKnownLiteralRun(
         sd,
         parentDir,
         parentSessionId,
         workspacePath,
       );
-      infos = infos.filter(
-        (info) =>
-          info.path !== literalPath ||
-          isValidLiteralChildInfo(info.id, info.cwd, workspacePath, allowConfiguredRootCwd),
-      );
+      const literalChild = await readLiteralChildSession(sd, workspacePath, allowConfiguredRootCwd);
+      const literalExists = await lstat(literalPath)
+        .then(() => true)
+        .catch(() => false);
+      let infos: SessionInfo[] = [];
+      if (!literalExists) {
+        try {
+          infos = await SessionManager.list(workspacePath, sd);
+        } catch {
+          // A malformed sibling must not suppress other child sessions.
+        }
+      }
       // SessionManager.list intentionally filters some literal filenames, so
       // read that one bounded header directly instead of opening it (which can
       // migrate or rewrite source JSONL files).
-      const literalChild = await readLiteralChildSession(sd, workspacePath, allowConfiguredRootCwd);
       if (literalChild !== undefined && !infos.some((info) => info.path === literalChild.path)) {
         infos = [...infos, literalChild];
       }
@@ -1987,12 +1989,20 @@ async function discoverSubagentChildSessions(
  * Read only the first 64 KiB of a literal pi-subagents child file. This is a
  * non-mutating counterpart to SessionManager.list for `run-N/session.jsonl`.
  */
-function isExactKnownLiteralRun(
+async function canonicalPath(path: string): Promise<string | undefined> {
+  try {
+    return await realpath(path);
+  } catch {
+    return undefined;
+  }
+}
+
+async function isExactKnownLiteralRun(
   dir: string,
   parentDir: string,
   parentSessionId: string | undefined,
   workspacePath: string,
-): boolean {
+): Promise<boolean> {
   if (parentSessionId === undefined) return false;
   const segments = relative(parentDir, dir).split(/[/\\]/);
   if (
@@ -2002,8 +2012,11 @@ function isExactKnownLiteralRun(
   ) {
     return false;
   }
-  const configuredRoot = resolve(config.workspacePath);
-  const projectPath = resolve(workspacePath);
+  const [configuredRoot, projectPath] = await Promise.all([
+    canonicalPath(config.workspacePath),
+    canonicalPath(workspacePath),
+  ]);
+  if (configuredRoot === undefined || projectPath === undefined) return false;
   const projectRelative = relative(configuredRoot, projectPath);
   return (
     projectRelative.length > 0 &&
@@ -2013,18 +2026,25 @@ function isExactKnownLiteralRun(
   );
 }
 
-function isValidLiteralChildInfo(
+async function isValidLiteralChildInfo(
   id: string,
   cwd: string,
   workspacePath: string,
   allowConfiguredRootCwd = false,
-): boolean {
-  const resolvedCwd = resolve(cwd);
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(id) || cwd.length === 0) {
+    return false;
+  }
+  const [canonicalCwd, canonicalProject, canonicalRoot] = await Promise.all([
+    canonicalPath(cwd),
+    canonicalPath(workspacePath),
+    allowConfiguredRootCwd ? canonicalPath(config.workspacePath) : Promise.resolve(undefined),
+  ]);
   return (
-    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(id) &&
-    cwd.length > 0 &&
-    (resolvedCwd === resolve(workspacePath) ||
-      (allowConfiguredRootCwd && resolvedCwd === resolve(config.workspacePath)))
+    canonicalCwd !== undefined &&
+    canonicalProject !== undefined &&
+    (canonicalCwd === canonicalProject ||
+      (allowConfiguredRootCwd && canonicalRoot !== undefined && canonicalCwd === canonicalRoot))
   );
 }
 
@@ -2037,7 +2057,10 @@ async function readLiteralChildSession(
   const path = join(dir, "session.jsonl");
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(path, "r");
+    // O_NOFOLLOW prevents a literal child symlink from escaping the session
+    // root. Validate the opened inode as a regular file before parsing it.
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) return undefined;
     const buffer = Buffer.alloc(64 * 1024);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     const lineEnd = buffer.subarray(0, bytesRead).indexOf(0x0a);
@@ -2049,7 +2072,12 @@ async function readLiteralChildSession(
       value.type !== "session" ||
       typeof value.id !== "string" ||
       typeof value.cwd !== "string" ||
-      !isValidLiteralChildInfo(value.id, value.cwd, workspacePath, allowConfiguredRootCwd) ||
+      !(await isValidLiteralChildInfo(
+        value.id,
+        value.cwd,
+        workspacePath,
+        allowConfiguredRootCwd,
+      )) ||
       typeof value.timestamp !== "string" ||
       Number.isNaN(Date.parse(value.timestamp))
     ) {

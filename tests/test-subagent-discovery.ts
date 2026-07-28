@@ -21,7 +21,7 @@
  * the registry treats any JSONL nested one level deeper than the
  * project session dir as a child.
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -977,6 +977,72 @@ async function main(): Promise<void> {
       (await readFile(malformedLiteralPath, "utf8")) === malformedLiteralSource &&
         (await readFile(foreignLiteralPath, "utf8")) === foreignLiteralSource,
     );
+
+    // A registered second project must not be able to lend its cwd to a
+    // child physically stored below this project's parent/session tree.
+    const secondProjectPath = join(workspacePath, "second-subagent-project");
+    await mkdir(secondProjectPath, { recursive: true });
+    const secondProject = await pm.createProject("second-subagent-project", secondProjectPath);
+    const registeredMismatchPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-7",
+      "session.jsonl",
+    );
+    await writeChildSessionFile(registeredMismatchPath, randomUUID(), secondProject.path);
+
+    // Headers may use equivalent workspace/project symlink aliases. Compare
+    // canonical paths, not lexical spellings, while retaining exact roots.
+    const projectCwdAlias = join(workspacePath, "project-cwd-alias");
+    const workspaceCwdAlias = `${workspacePath}-cwd-alias`;
+    await symlink(project.path, projectCwdAlias);
+    await symlink(workspacePath, workspaceCwdAlias);
+    const projectAliasChildId = randomUUID();
+    const workspaceAliasChildId = randomUUID();
+    await writeChildSessionFile(
+      join(projectSessionDir, deepBasename, deepRunId, "run-8", "session.jsonl"),
+      projectAliasChildId,
+      projectCwdAlias,
+    );
+    await writeChildSessionFile(
+      join(projectSessionDir, deepBasename, deepRunId, "run-9", "session.jsonl"),
+      workspaceAliasChildId,
+      workspaceCwdAlias,
+    );
+
+    // A symlinked literal child must be rejected without following its target.
+    const externalLiteralPath = `${workspacePath}-external-child.jsonl`;
+    await writeChildSessionFile(externalLiteralPath, randomUUID(), project.path);
+    const linkedLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-10",
+      "session.jsonl",
+    );
+    await mkdir(dirname(linkedLiteralPath), { recursive: true });
+    await symlink(externalLiteralPath, linkedLiteralPath);
+    const aliasAndSymlinkDiscovery = await registry.discoverSessionsOnDisk(
+      project.id,
+      project.path,
+    );
+    assert(
+      "literal child rejects a cwd from another registered project",
+      !aliasAndSymlinkDiscovery.some((d) => d.path === registeredMismatchPath),
+    );
+    assert(
+      "literal children accept canonical project and configured-workspace cwd aliases",
+      aliasAndSymlinkDiscovery.some((d) => d.sessionId === projectAliasChildId) &&
+        aliasAndSymlinkDiscovery.some((d) => d.sessionId === workspaceAliasChildId),
+    );
+    assert(
+      "literal child symlink is rejected without following or rewriting its target",
+      !aliasAndSymlinkDiscovery.some((d) => d.path === linkedLiteralPath) &&
+        (await readFile(externalLiteralPath, "utf8")).includes("session"),
+    );
+    await rm(workspaceCwdAlias, { force: true });
+    await rm(externalLiteralPath, { force: true });
 
     // 8b. FLAT layout (no runId subdir): some pi-subagents run modes
     // write children directly under <parentBasename>/, not under
