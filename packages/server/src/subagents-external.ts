@@ -650,6 +650,85 @@ function publicSupervisorRequest(
 }
 
 const SUPERVISOR_REPLY_CUSTOM_TYPE = "subagent_supervisor_reply";
+const FORGE_SUPERVISOR_TOOL_RESULT_SOURCE = "pi-forge";
+
+/**
+ * Project an explicit browser decision onto the native parent tool result.
+ * The native extension exposes only replyTo/runId/agent at this boundary, so
+ * all of those fields plus the parent session must resolve to one persisted
+ * immutable request tuple. Ambiguous, incomplete, and terminal-only replies
+ * deliberately remain neutral.
+ */
+function enrichForgeSupervisorToolResults(
+  messages: readonly unknown[],
+  parentSessionId: string,
+  history: readonly ExternalSupervisorRequest[],
+): void {
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const result = message as {
+      role?: unknown;
+      toolName?: unknown;
+      details?: unknown;
+    };
+    if (result.role !== "toolResult" || result.toolName !== "subagent_supervisor") continue;
+    if (!result.details || typeof result.details !== "object" || Array.isArray(result.details))
+      continue;
+    const details = result.details as Record<string, unknown>;
+    const replyTo = details.replyTo;
+    const runId = details.runId;
+    const agent = details.agent;
+    if (
+      !isSafeSupervisorId(replyTo) ||
+      !isCanonicalSupervisorString(runId, 4096) ||
+      !isCanonicalSupervisorString(agent, 256)
+    )
+      continue;
+    const matches = history.filter(
+      (request) =>
+        request.status === "answered" &&
+        request.parentSessionId === parentSessionId &&
+        request.requestId === replyTo &&
+        request.runId === runId &&
+        request.agent === agent &&
+        persistedSupervisorDecision(request.decision) !== "no-decision" &&
+        persistedSupervisorRequestFor(history, request) !== undefined,
+    );
+    // childIndex is absent from the native result. Refuse to classify unless
+    // the available native fields identify exactly one complete tuple.
+    if (matches.length !== 1) continue;
+    const request = matches[0]!;
+    try {
+      Object.assign(details, {
+        forgeDecision: persistedSupervisorDecision(request.decision),
+        forgeDecisionSource: FORGE_SUPERVISOR_TOOL_RESULT_SOURCE,
+        forgeDecisionRequest: {
+          requestId: request.requestId,
+          parentSessionId: request.parentSessionId,
+          runId: request.runId,
+          agent: request.agent,
+          childIndex: request.childIndex,
+        },
+      });
+    } catch {
+      // Session messages are normally mutable SDK objects. If a future SDK
+      // freezes one, the persisted history still replays as a browser card.
+    }
+  }
+}
+
+export async function enrichForgeSupervisorToolResultsForSession(
+  sessionId: string,
+  knownHistory?: readonly ExternalSupervisorRequest[],
+): Promise<void> {
+  const live = getSession(sessionId);
+  if (live === undefined) return;
+  enrichForgeSupervisorToolResults(
+    live.session.messages,
+    sessionId,
+    knownHistory ?? (await readSupervisorHistory()),
+  );
+}
 
 function hasForgeSupervisorReplyMessage(
   messages: readonly unknown[],
@@ -719,6 +798,7 @@ async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): 
 /** Rehydrate missed browser reply cards after a native cleanup or server restart. */
 export async function replayForgeSupervisorRepliesForSession(sessionId: string): Promise<void> {
   const history = await readSupervisorHistory();
+  await enrichForgeSupervisorToolResultsForSession(sessionId, history);
   for (const request of history) {
     // A duplicate persisted tuple is corrupt/ambiguous. Do not guess which
     // classification belongs in the parent transcript.
@@ -1026,7 +1106,9 @@ export async function replyExternalSupervisorRequest(
     // Keep newest-first before the fixed-cap writer so a just-accepted reply
     // cannot be evicted when history is already full.
     retained.unshift(projected);
-    await writeSupervisorHistory(sortSupervisorHistory(retained));
+    const persisted = sortSupervisorHistory(retained);
+    await writeSupervisorHistory(persisted);
+    await enrichForgeSupervisorToolResultsForSession(request.parentSessionId, persisted);
     await deliverForgeSupervisorReply(projected);
     return { accepted: true, status: "answered", decision, repliedAt };
   });

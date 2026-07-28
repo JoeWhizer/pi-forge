@@ -25,6 +25,7 @@ import { buildTurnDiff } from "../turn-diff-builder.js";
 import { buildCompactionHistory } from "../compaction-history.js";
 import { getCodexUsageSnapshot } from "../codex-usage.js";
 import {
+  enrichForgeSupervisorToolResultsForSession,
   getExternalSubagentStatusForSession,
   readSessionMessagesFromDisk,
 } from "../subagents-external.js";
@@ -457,6 +458,7 @@ export const sessionRoutes: FastifyPluginAsync = async (fastify) => {
             live.projectId,
             live.workspacePath,
           );
+          await enrichForgeSupervisorToolResultsForSession(live.sessionId);
           return { messages: live.session.messages };
         } catch (err) {
           if (!(err instanceof ExternalSubagentActiveError)) throw err;

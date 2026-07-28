@@ -66,12 +66,16 @@ export function supervisorDecisionFromForgeReplyEvent(
 }
 
 /**
- * `subagent_supervisor` is a trusted extension result boundary. Its optional
- * decision field is durable protocol metadata, unlike its localized text body.
+ * Native supervisor replies carry transport metadata only. Forge adds this
+ * marker after an exact persisted browser-decision correlation; arbitrary
+ * extension fields and terminal replies therefore remain neutral.
  */
 export function supervisorDecisionFromSupervisorToolResult(
   details: unknown,
 ): SubagentSupervisorDecision {
   if (typeof details !== "object" || details === null) return NO_SUPERVISOR_DECISION;
-  return supervisorDecisionFromValue((details as Record<string, unknown>).decision);
+  const value = details as Record<string, unknown>;
+  return value.forgeDecisionSource === "pi-forge"
+    ? supervisorDecisionFromValue(value.forgeDecision)
+    : NO_SUPERVISOR_DECISION;
 }

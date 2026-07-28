@@ -15,6 +15,68 @@ function assert(label: string, ok: boolean, detail?: string): void {
   }
 }
 
+function appendRawNativeSupervisorReply(
+  session: { sessionManager: { appendMessage: (message: unknown) => void } },
+  request: { requestId: string; runId: string; agent: string },
+): void {
+  const toolCallId = `supervisor-reply-${randomUUID()}`;
+  session.sessionManager.appendMessage({
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: toolCallId,
+        name: "subagent_supervisor",
+        arguments: {
+          action: "reply",
+          replyTo: request.requestId,
+          message: "Genehmigt in arbitrary terminal text.",
+        },
+      },
+    ],
+    api: "messages",
+    provider: "anthropic",
+    model: "test-fixture",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "toolUse",
+    timestamp: Date.now(),
+  });
+  session.sessionManager.appendMessage({
+    role: "toolResult",
+    toolCallId,
+    toolName: "subagent_supervisor",
+    content: [{ type: "text", text: `Replied to supervisor request ${request.requestId}.` }],
+    details: {
+      replyTo: request.requestId,
+      runId: request.runId,
+      agent: request.agent,
+    },
+    isError: false,
+    timestamp: Date.now(),
+  });
+}
+
+function rawNativeSupervisorDecision(messages: readonly unknown[], requestId: string): unknown {
+  const message = messages.find((candidate) => {
+    const value = candidate as { role?: unknown; toolName?: unknown; details?: unknown };
+    return (
+      value.role === "toolResult" &&
+      value.toolName === "subagent_supervisor" &&
+      typeof value.details === "object" &&
+      value.details !== null &&
+      (value.details as Record<string, unknown>).replyTo === requestId
+    );
+  }) as { details?: Record<string, unknown> } | undefined;
+  return message?.details;
+}
+
 async function main(): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "pi-forge-supervisor-test-"));
   process.env.NODE_ENV = "test";
@@ -44,6 +106,7 @@ async function main(): Promise<void> {
       message: string,
       decision: "approved" | "rejected" | "no-decision",
     ) => Promise<{ accepted: boolean; decision?: string }>;
+    replayForgeSupervisorRepliesForSession: (sessionId: string) => Promise<void>;
   };
   const projects = (await import(resolve(repoRoot, "packages/server/dist/project-manager.js"))) as {
     createProject: (name: string, path: string) => Promise<{ id: string }>;
@@ -66,7 +129,12 @@ async function main(): Promise<void> {
       sessionId: string,
       projectId: string,
       workspacePath: string,
-    ) => Promise<{ session: { messages: readonly unknown[] } }>;
+    ) => Promise<{
+      session: {
+        messages: readonly unknown[];
+        sessionManager: { appendMessage: (message: unknown) => void };
+      };
+    }>;
   };
   const sse = (await import(resolve(repoRoot, "packages/server/dist/sse-bridge.js"))) as {
     buildSnapshot: (live: unknown) => { messages: readonly unknown[] };
@@ -265,6 +333,20 @@ async function main(): Promise<void> {
         );
       });
     const resumed = await registry.resumeSession(parent.sessionId, project.id, fixtureDir);
+    // Simulate the native result arriving after Forge persistence and native
+    // request cleanup. Replay must enrich this raw Chat tool-result shape.
+    appendRawNativeSupervisorReply(resumed.session, {
+      requestId: replayId,
+      runId: replayRunId,
+      agent: "worker",
+    });
+    await registry.disposeSession(parent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    const approvalResumed = await registry.resumeSession(parent.sessionId, project.id, fixtureDir);
+    const approvalRawDetails = rawNativeSupervisorDecision(
+      approvalResumed.session.messages,
+      replayId,
+    );
     assert(
       "cold parent resume restores the native-cleaned browser approval as an authoritative Chat and Fleet result",
       accepted.accepted &&
@@ -278,7 +360,7 @@ async function main(): Promise<void> {
             request.replyMessage === browserReply,
         ) &&
         hasBrowserCard(
-          resumed.session.messages,
+          approvalResumed.session.messages,
           {
             requestId: replayId,
             parentSessionId: parent.sessionId,
@@ -288,8 +370,11 @@ async function main(): Promise<void> {
           },
           browserReply,
           "approved",
-        ),
-      JSON.stringify({ fleetAfterNativeCleanup, messages: resumed.session.messages }),
+        ) &&
+        (approvalRawDetails as Record<string, unknown> | undefined)?.forgeDecision === "approved" &&
+        (approvalRawDetails as Record<string, unknown> | undefined)?.forgeDecisionSource ===
+          "pi-forge",
+      JSON.stringify({ fleetAfterNativeCleanup, messages: approvalResumed.session.messages }),
     );
 
     const rejectedParent = await registry.createSession(project.id, fixtureDir);
@@ -335,12 +420,30 @@ async function main(): Promise<void> {
       "utf8",
     );
     const rejectReply = "Reject this exact browser decision.";
+    // Simulate the native result being emitted before Forge persists the
+    // browser rejection. The reply action must retrofit the existing card.
+    appendRawNativeSupervisorReply(rejectedParent.session, {
+      requestId: rejectId,
+      runId: rejectRunId,
+      agent: "worker",
+    });
+    await registry.disposeSession(rejectedParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    const rejectedLive = await registry.resumeSession(
+      rejectedParent.sessionId,
+      project.id,
+      fixtureDir,
+    );
     const rejected = await external.replyExternalSupervisorRequest(
       rejectId,
       rejectReply,
       "rejected",
     );
-    const liveRejectionSnapshot = sse.buildSnapshot(rejectedParent);
+    const liveRejectionSnapshot = sse.buildSnapshot(rejectedLive);
+    const rejectionRawDetails = rawNativeSupervisorDecision(
+      rejectedLive.session.messages,
+      rejectId,
+    );
     await rm(join(rejectChannel, "requests", `${rejectId}.json`));
     const fleetAfterRejectNativeCleanup = await external.listExternalSupervisorRequests();
     await registry.disposeSession(rejectedParent.sessionId);
@@ -361,7 +464,7 @@ async function main(): Promise<void> {
       "live event, reload snapshot, and cold resume preserve the native-cleaned browser rejection",
       rejected.accepted &&
         rejected.decision === "rejected" &&
-        hasBrowserCard(rejectedParent.session.messages, rejectedRequest, rejectReply, "rejected") &&
+        hasBrowserCard(rejectedLive.session.messages, rejectedRequest, rejectReply, "rejected") &&
         hasBrowserCard(liveRejectionSnapshot.messages, rejectedRequest, rejectReply, "rejected") &&
         fleetAfterRejectNativeCleanup.some(
           (request) =>
@@ -371,14 +474,91 @@ async function main(): Promise<void> {
             request.decision === "rejected" &&
             request.replyMessage === rejectReply,
         ) &&
-        hasBrowserCard(rejectedResumed.session.messages, rejectedRequest, rejectReply, "rejected"),
+        hasBrowserCard(
+          rejectedResumed.session.messages,
+          rejectedRequest,
+          rejectReply,
+          "rejected",
+        ) &&
+        (rejectionRawDetails as Record<string, unknown> | undefined)?.forgeDecision ===
+          "rejected" &&
+        (rejectionRawDetails as Record<string, unknown> | undefined)?.forgeDecisionSource ===
+          "pi-forge",
       JSON.stringify({
         fleetAfterRejectNativeCleanup,
-        liveMessages: rejectedParent.session.messages,
+        liveMessages: rejectedLive.session.messages,
         snapshotMessages: liveRejectionSnapshot.messages,
         resumedMessages: rejectedResumed.session.messages,
       }),
     );
+    const terminalRequestId = randomUUID();
+    const terminalRunId = `supervisor-terminal-${randomUUID()}`;
+    const terminalChannel = join(
+      external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+      `${terminalRunId}-worker-1`,
+    );
+    await mkdir(join(terminalChannel, "requests"), { recursive: true });
+    await writeFile(
+      join(terminalChannel, "requests", `${terminalRequestId}.json`),
+      JSON.stringify({
+        type: "subagent.supervisor.request",
+        id: terminalRequestId,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        reason: "need_decision",
+        message: "A terminal reply must remain neutral.",
+        expectsReply: true,
+        orchestratorSessionId: rejectedParent.sessionId,
+        runId: terminalRunId,
+        agent: "worker",
+        childIndex: 1,
+      }),
+      "utf8",
+    );
+    await external.listExternalSupervisorRequests();
+    await mkdir(join(terminalChannel, "replies"), { recursive: true });
+    await writeFile(
+      join(terminalChannel, "replies", `${terminalRequestId}.json`),
+      JSON.stringify({
+        type: "subagent.supervisor.reply",
+        requestId: terminalRequestId,
+        createdAt: Date.now(),
+        message: "Approved in arbitrary terminal text.",
+      }),
+      "utf8",
+    );
+    await rm(join(terminalChannel, "requests", `${terminalRequestId}.json`));
+    const fleetAfterTerminalReply = await external.listExternalSupervisorRequests();
+    appendRawNativeSupervisorReply(rejectedResumed.session, {
+      requestId: terminalRequestId,
+      runId: terminalRunId,
+      agent: "worker",
+    });
+    await registry.disposeSession(rejectedParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    const terminalResumed = await registry.resumeSession(
+      rejectedParent.sessionId,
+      project.id,
+      fixtureDir,
+    );
+    const terminalRawDetails = rawNativeSupervisorDecision(
+      terminalResumed.session.messages,
+      terminalRequestId,
+    );
+    assert(
+      "direct terminal supervisor replies remain neutral even when their free text says approved",
+      fleetAfterTerminalReply.some(
+        (request) =>
+          request.requestId === terminalRequestId &&
+          request.status === "answered" &&
+          request.decision === "no-decision",
+      ) &&
+        terminalRawDetails !== undefined &&
+        (terminalRawDetails as Record<string, unknown> | undefined)?.forgeDecision === undefined,
+      JSON.stringify({ fleetAfterTerminalReply, terminalRawDetails }),
+    );
+    await rm(terminalChannel, { recursive: true, force: true });
+
     const legacyParent = await registry.createSession(project.id, fixtureDir);
     legacyParent.session.sessionManager.appendMessage({
       role: "assistant",

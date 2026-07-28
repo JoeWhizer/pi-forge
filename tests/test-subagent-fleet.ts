@@ -204,10 +204,17 @@ async function main(): Promise<void> {
         source: "pi-forge",
         decision: "approved",
       }) === "approved" &&
-      supervisorDecisionFromSupervisorToolResult({ decision: "approved" }) === "approved" &&
       supervisorDecisionFromSupervisorToolResult({
-        decision: "Genehmigt",
+        forgeDecisionSource: "pi-forge",
+        forgeDecision: "approved",
+      }) === "approved" &&
+      supervisorDecisionFromSupervisorToolResult({
+        decision: "approved",
         message: "Approved in arbitrary free text",
+      }) === "no-decision" &&
+      supervisorDecisionFromSupervisorToolResult({
+        forgeDecisionSource: "terminal",
+        forgeDecision: "rejected",
       }) === "no-decision" &&
       supervisorDecisionPresentation("approved").label === "Approved" &&
       supervisorDecisionPresentation("approved").className.includes("emerald") &&
