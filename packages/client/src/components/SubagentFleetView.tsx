@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Clock3,
@@ -14,6 +14,7 @@ import {
   formatSubagentDuration,
   groupSubagentFleetRuns,
   isActiveSubagentFleetState,
+  truncateSubagentFleetRunId,
 } from "../lib/subagent-fleet";
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
@@ -37,6 +38,7 @@ export function SubagentFleetView({ onClose }: Props) {
   const setActiveProject = useProjectStore((state) => state.setActive);
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
+  const openingSessionRef = useRef(false);
 
   useEffect(() => {
     startPolling();
@@ -56,6 +58,10 @@ export function SubagentFleetView({ onClose }: Props) {
   const activeCount = runs.filter((run) => isActiveSubagentFleetState(run.state)).length;
 
   const openChildSession = async (sessionId: string): Promise<void> => {
+    // State updates are not synchronous, so use a ref to reject rapid clicks
+    // before the disabled state reaches every child-session button.
+    if (openingSessionRef.current) return;
+    openingSessionRef.current = true;
     setOpeningSessionId(sessionId);
     setOpenError(undefined);
     try {
@@ -70,6 +76,7 @@ export function SubagentFleetView({ onClose }: Props) {
     } catch (err) {
       setOpenError(err instanceof Error ? err.message : "session_open_failed");
     } finally {
+      openingSessionRef.current = false;
       setOpeningSessionId(undefined);
     }
   };
@@ -151,8 +158,11 @@ export function SubagentFleetView({ onClose }: Props) {
                           >
                             <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
                               <StatusBadge state={run.state} />
-                              <span className="font-mono text-neutral-300 light:text-neutral-700">
-                                {run.runId}
+                              <span
+                                title={run.runId}
+                                className="min-w-0 max-w-full break-all font-mono text-neutral-300 light:text-neutral-700"
+                              >
+                                {truncateSubagentFleetRunId(run.runId)}
                               </span>
                               {run.mode !== undefined && (
                                 <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] uppercase text-neutral-400 light:bg-neutral-100 light:text-neutral-600">
@@ -184,7 +194,8 @@ export function SubagentFleetView({ onClose }: Props) {
                                       key={child.childId}
                                       child={child}
                                       index={index}
-                                      opening={openingSessionId === child.sessionId}
+                                      opening={openingSessionId !== undefined}
+                                      openingThis={openingSessionId === child.sessionId}
                                       onOpen={(sessionId) => void openChildSession(sessionId)}
                                     />
                                   ))}
@@ -210,11 +221,13 @@ function ChildRow({
   child,
   index,
   opening,
+  openingThis,
   onOpen,
 }: {
   child: SubagentFleetChild;
   index: number;
   opening: boolean;
+  openingThis: boolean;
   onOpen: (sessionId: string) => void;
 }) {
   const duration = formatSubagentDuration(child.durationMs, child.startedAt, child.endedAt);
@@ -239,7 +252,11 @@ function ChildRow({
             disabled={opening}
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
-            {opening ? <Loader2 size={11} className="animate-spin" /> : <ExternalLink size={11} />}
+            {openingThis ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <ExternalLink size={11} />
+            )}
             Open child session
           </button>
         )}

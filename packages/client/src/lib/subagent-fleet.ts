@@ -24,6 +24,12 @@ export function isActiveSubagentFleetState(state: SubagentFleetState): boolean {
   return state === "queued" || state === "running";
 }
 
+/** Keep arbitrary lifecycle ids from expanding a fleet card beyond the viewport. */
+export function truncateSubagentFleetRunId(runId: string, maximumLength = 80): string {
+  if (runId.length <= maximumLength) return runId;
+  return `${runId.slice(0, maximumLength - 1)}…`;
+}
+
 export function formatSubagentDuration(
   durationMs: number | undefined,
   startedAt: number | undefined,

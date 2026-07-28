@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import {
   formatSubagentDuration,
   groupSubagentFleetRuns,
+  truncateSubagentFleetRunId,
 } from "../packages/client/src/lib/subagent-fleet";
 import type { SubagentFleetRun } from "../packages/client/src/lib/api-client/types";
 
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
     SUBAGENTS_ASYNC_DIR: string;
     SUBAGENTS_RESULTS_DIR: string;
     listExternalSubagentFleetRuns: () => Promise<SubagentFleetRun[]>;
+    _hasExternalSubagentFleetRunCacheEntryForTests: (root: string) => boolean;
   };
 
   const activeRoot = `fleet-active-${randomUUID()}`;
@@ -191,6 +193,23 @@ async function main(): Promise<void> {
       "duration formatter derives live and terminal durations",
       formatSubagentDuration(undefined, 1_000, undefined, 66_000) === "1m 5s" &&
         formatSubagentDuration(undefined, 1_000, 3_000) === "2s",
+    );
+    const oversizedRunId = "r".repeat(160);
+    assert(
+      "fleet run ids are safely truncated for narrow cards",
+      truncateSubagentFleetRunId(oversizedRunId) === `${"r".repeat(79)}…` &&
+        truncateSubagentFleetRunId("short-run") === "short-run",
+    );
+
+    await Promise.all([
+      rm(join(external.SUBAGENTS_ASYNC_DIR, activeRoot), { recursive: true, force: true }),
+      rm(join(external.SUBAGENTS_ASYNC_DIR, failedRoot), { recursive: true, force: true }),
+    ]);
+    await external.listExternalSubagentFleetRuns();
+    assert(
+      "fleet cache prunes deleted lifecycle roots",
+      !external._hasExternalSubagentFleetRunCacheEntryForTests(activeRoot) &&
+        !external._hasExternalSubagentFleetRunCacheEntryForTests(failedRoot),
     );
   } finally {
     await Promise.all(cleanupPaths.map((path) => rm(path, { recursive: true, force: true })));

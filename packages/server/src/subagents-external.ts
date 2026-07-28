@@ -139,6 +139,7 @@ const PARENT_VISIBLE_STATES = new Set<ExternalSubagentState>([
   "stopped",
 ]);
 const deliveredCompletionKeys = new Set<string>();
+const MAX_FLEET_RUN_CACHE_ENTRIES = 500;
 const fleetRunCache = new Map<string, { stamp: string; run: ExternalSubagentFleetRun }>();
 // Status files are rewritten repeatedly while a run is active. Remember every
 // delivered state transition so a poll/watch burst creates one sidebar update,
@@ -290,6 +291,31 @@ async function fleetChildFrom(
   return child;
 }
 
+function boundFleetRunCache(): void {
+  while (fleetRunCache.size > MAX_FLEET_RUN_CACHE_ENTRIES) {
+    const oldestRoot = fleetRunCache.keys().next().value;
+    if (oldestRoot === undefined) return;
+    fleetRunCache.delete(oldestRoot);
+  }
+}
+
+function pruneFleetRunCache(roots: ReadonlySet<string>): void {
+  for (const root of fleetRunCache.keys()) {
+    if (!roots.has(root)) fleetRunCache.delete(root);
+  }
+  boundFleetRunCache();
+}
+
+function cacheFleetRun(
+  root: string,
+  value: { stamp: string; run: ExternalSubagentFleetRun },
+): void {
+  // Refresh insertion order so the bounded cache evicts least-recently-used runs.
+  fleetRunCache.delete(root);
+  fleetRunCache.set(root, value);
+  boundFleetRunCache();
+}
+
 async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | undefined> {
   const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
   const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
@@ -301,6 +327,7 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
     cached.run.parentSessionId !== undefined &&
     cached.run.children.every((child) => child.sessionId !== undefined)
   ) {
+    cacheFleetRun(root, cached);
     return cached.run;
   }
 
@@ -343,7 +370,7 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
   // A status write changes mtime whenever lifecycle details change. Cache the
   // small, sanitized projection rather than repeatedly parsing potentially
   // large recent-output fields on every fleet poll.
-  fleetRunCache.set(root, { stamp, run });
+  cacheFleetRun(root, { stamp, run });
   return run;
 }
 
@@ -353,9 +380,13 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
  * malformed or partially-written status files are skipped until the next poll.
  */
 export async function listExternalSubagentFleetRuns(): Promise<ExternalSubagentFleetRun[]> {
-  const runs = (
-    await Promise.all((await readStatusRoots()).map(async (root) => readFleetRun(root)))
-  ).filter((run): run is ExternalSubagentFleetRun => run !== undefined);
+  const roots = await readStatusRoots();
+  // Lifecycle directories can be deleted by pi-subagents. Remove their
+  // projections before every poll so the process does not retain stale runs.
+  pruneFleetRunCache(new Set(roots));
+  const runs = (await Promise.all(roots.map(async (root) => readFleetRun(root)))).filter(
+    (run): run is ExternalSubagentFleetRun => run !== undefined,
+  );
   runs.sort((a, b) => {
     const aActive = ACTIVE_STATES.has(a.state) ? 1 : 0;
     const bActive = ACTIVE_STATES.has(b.state) ? 1 : 0;
@@ -365,6 +396,11 @@ export async function listExternalSubagentFleetRuns(): Promise<ExternalSubagentF
     return bTime - aTime || a.runId.localeCompare(b.runId);
   });
   return runs;
+}
+
+/** Test-only cache visibility for lifecycle-root pruning regression coverage. */
+export function _hasExternalSubagentFleetRunCacheEntryForTests(root: string): boolean {
+  return fleetRunCache.has(root);
 }
 
 function statusFileSessionPaths(status: AsyncStatusFile): string[] {
