@@ -228,7 +228,18 @@ async function main(): Promise<void> {
       JSON.stringify(fleetWithCollision),
     );
 
-    const hasBrowserCard = (messages: readonly unknown[]): boolean =>
+    const hasBrowserCard = (
+      messages: readonly unknown[],
+      request: {
+        requestId: string;
+        parentSessionId: string;
+        runId: string;
+        agent: string;
+        childIndex: number;
+      },
+      replyMessage: string,
+      decision: "approved" | "rejected",
+    ): boolean =>
       messages.some((candidate) => {
         const value = candidate as {
           role?: unknown;
@@ -239,14 +250,14 @@ async function main(): Promise<void> {
         return (
           value.role === "custom" &&
           value.customType === "subagent_supervisor_reply" &&
-          value.content === browserReply &&
+          value.content === replyMessage &&
           value.details?.source === "pi-forge" &&
-          value.details.decision === "approved" &&
-          value.details.requestId === replayId &&
-          value.details.parentSessionId === parent.sessionId &&
-          value.details.runId === replayRunId &&
-          value.details.agent === "worker" &&
-          value.details.childIndex === 0
+          value.details.decision === decision &&
+          value.details.requestId === request.requestId &&
+          value.details.parentSessionId === request.parentSessionId &&
+          value.details.runId === request.runId &&
+          value.details.agent === request.agent &&
+          value.details.childIndex === request.childIndex
         );
       });
     const resumed = await registry.resumeSession(parent.sessionId, project.id, fixtureDir);
@@ -262,12 +273,115 @@ async function main(): Promise<void> {
             request.decision === "approved" &&
             request.replyMessage === browserReply,
         ) &&
-        hasBrowserCard(resumed.session.messages),
+        hasBrowserCard(
+          resumed.session.messages,
+          {
+            requestId: replayId,
+            parentSessionId: parent.sessionId,
+            runId: replayRunId,
+            agent: "worker",
+            childIndex: 0,
+          },
+          browserReply,
+          "approved",
+        ),
       JSON.stringify({ fleetAfterNativeCleanup, messages: resumed.session.messages }),
     );
+
+    const rejectedParent = await registry.createSession(project.id, fixtureDir);
+    rejectedParent.session.sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "supervisor rejection fixture", id: "fixture" }],
+      api: "messages",
+      provider: "anthropic",
+      model: "test-fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+    // As with approval, reject after disposal so only durable history can
+    // restore the browser reply card during the genuine cold resume path.
+    await registry.disposeSession(rejectedParent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+
+    const rejectId = randomUUID();
+    const rejectRunId = `supervisor-reject-${randomUUID()}`;
+    const rejectChannel = join(
+      external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+      `${rejectRunId}-worker-0`,
+    );
+    await mkdir(join(rejectChannel, "requests"), { recursive: true });
+    await writeFile(
+      join(rejectChannel, "requests", `${rejectId}.json`),
+      JSON.stringify({
+        type: "subagent.supervisor.request",
+        id: rejectId,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        reason: "need_decision",
+        message: "Should this browser rejection survive cold resume?",
+        expectsReply: true,
+        orchestratorSessionId: rejectedParent.sessionId,
+        runId: rejectRunId,
+        agent: "worker",
+        childIndex: 0,
+      }),
+      "utf8",
+    );
+    const rejectReply = "Reject this exact browser decision.";
+    const rejected = await external.replyExternalSupervisorRequest(
+      rejectId,
+      rejectReply,
+      "rejected",
+    );
+    await rm(join(rejectChannel, "requests", `${rejectId}.json`));
+    const fleetAfterRejectNativeCleanup = await external.listExternalSupervisorRequests();
+    const rejectedResumed = await registry.resumeSession(
+      rejectedParent.sessionId,
+      project.id,
+      fixtureDir,
+    );
+    assert(
+      "cold parent resume restores the native-cleaned browser rejection as an authoritative Chat and Fleet result",
+      rejected.accepted &&
+        rejected.decision === "rejected" &&
+        fleetAfterRejectNativeCleanup.some(
+          (request) =>
+            request.runId === rejectRunId &&
+            request.requestId === rejectId &&
+            request.status === "answered" &&
+            request.decision === "rejected" &&
+            request.replyMessage === rejectReply,
+        ) &&
+        hasBrowserCard(
+          rejectedResumed.session.messages,
+          {
+            requestId: rejectId,
+            parentSessionId: rejectedParent.sessionId,
+            runId: rejectRunId,
+            agent: "worker",
+            childIndex: 0,
+          },
+          rejectReply,
+          "rejected",
+        ),
+      JSON.stringify({
+        fleetAfterRejectNativeCleanup,
+        messages: rejectedResumed.session.messages,
+      }),
+    );
     await registry.disposeSession(parent.sessionId);
+    await registry.disposeSession(rejectedParent.sessionId);
     await rm(replayChannel, { recursive: true, force: true });
     await rm(reusedChannel, { recursive: true, force: true });
+    await rm(rejectChannel, { recursive: true, force: true });
   } finally {
     await Promise.all([
       rm(validChannel, { recursive: true, force: true }),
