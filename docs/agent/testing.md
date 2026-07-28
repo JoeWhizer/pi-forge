@@ -126,6 +126,7 @@ test-search               file content search via ripgrep
 test-session              AgentSession registry + dispose / resume / fork
 test-sse                  SSE event stream + snapshot-on-connect
 test-subagent-discovery   pi-subagents child-JSONL discovery
+test-subagent-fleet       lifecycle artifact projection + stable fleet hierarchy
 test-subagent-parser      pi-subagents tool-result parsing for the rich card
 test-terminal             PTY WebSocket + idle-reap
 test-tool-overrides       per-project tool enable/disable + cascade

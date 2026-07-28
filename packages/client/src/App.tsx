@@ -23,6 +23,7 @@ import { ChatView } from "./components/ChatView";
 import { ChatInput } from "./components/ChatInput";
 import { ChangedFilesBadge } from "./components/ChangedFilesBadge";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { SubagentFleetView } from "./components/SubagentFleetView";
 import { AskUserQuestionPanel } from "./components/AskUserQuestionPanel";
 import { TodoPanel } from "./components/TodoPanel";
 import { ProcessesPanel } from "./components/ProcessesPanel";
@@ -113,6 +114,8 @@ export function App() {
   };
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const subagentFleetOpen = useUiStore((s) => s.subagentFleetOpen);
+  const closeSubagentFleet = useUiStore((s) => s.closeSubagentFleet);
   // Files pane visibility persists across reloads — opening it once is
   // a strong signal the user wants it. localStorage > a session-scoped
   // boolean so a refresh doesn't snap back to "hidden".
@@ -240,10 +243,7 @@ export function App() {
   // it through the ref so the divider can read the start width without
   // a stale-closure bug across drags.
   const [projectsWidth, setProjectsWidth] = useState<number>(() =>
-    Math.max(
-      MIN_PROJECTS_WIDTH,
-      readPersistedWidth(PROJECTS_WIDTH_KEY, DEFAULT_PROJECTS_WIDTH),
-    ),
+    Math.max(MIN_PROJECTS_WIDTH, readPersistedWidth(PROJECTS_WIDTH_KEY, DEFAULT_PROJECTS_WIDTH)),
   );
   const [filesWidth, setFilesWidth] = useState<number>(() =>
     readPersistedWidth(FILES_WIDTH_KEY, DEFAULT_FILES_WIDTH),
@@ -602,6 +602,8 @@ export function App() {
           {...(pendingSettingsTab !== undefined ? { initialTab: pendingSettingsTab } : {})}
         />
       )}
+
+      {subagentFleetOpen && <SubagentFleetView onClose={closeSubagentFleet} />}
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <div className="flex flex-1 overflow-hidden">

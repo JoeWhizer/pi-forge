@@ -358,10 +358,20 @@ or render path).
 
 ### pi-subagents lifecycle status
 
-Pi Forge does not offer a pause control for pi-subagents 0.37 because its
-pause request is not reliable. When an externally observed run reports
-`paused`, Forge retains it as a non-spinning lifecycle status. Running,
-stopped, complete, and failed status indicators remain available.
+Pi Forge provides a read-only `/subagent-fleet` view from the chat command
+palette. It reads pi-subagents lifecycle artifacts through an authenticated
+Forge API and groups runs by their stable `parentSessionId` and `runId`. Active
+and terminal runs remain visible with model, duration, and error details when
+the installed pi-subagents version records them. A child session can be opened
+through Forge's normal session navigation when the artifact contains a valid
+child session file.
+
+Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
+request is not reliable. When an externally observed run reports `paused`,
+Forge retains it as a non-spinning lifecycle status. Running, stopped,
+complete, and failed status indicators remain available. The fleet currently
+polls while open; artifacts with missing parent/child session metadata remain
+visible but cannot offer session navigation.
 
 ## Docker bind mounts
 

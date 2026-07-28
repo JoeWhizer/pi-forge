@@ -391,6 +391,40 @@ export interface UnifiedSession {
   path?: string;
 }
 
+export type SubagentFleetState =
+  | "queued"
+  | "running"
+  | "complete"
+  | "failed"
+  | "paused"
+  | "stopped";
+
+export interface SubagentFleetChild {
+  childId: string;
+  state: SubagentFleetState;
+  agent?: string;
+  model?: string;
+  sessionId?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface SubagentFleetRun {
+  runId: string;
+  parentSessionId?: string;
+  state: SubagentFleetState;
+  mode?: string;
+  model?: string;
+  startedAt?: number;
+  endedAt?: number;
+  lastActivityAt?: number;
+  durationMs?: number;
+  error?: string;
+  children: SubagentFleetChild[];
+}
+
 export type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface ExtensionCommandSummary {

@@ -1,5 +1,5 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { open, readdir, readFile } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import * as os from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -25,12 +25,57 @@ export interface ExternalSubagentStatus {
   sessionFile?: string;
 }
 
+export interface ExternalSubagentFleetChild {
+  /** Stable within a run even before the child session file exists. */
+  childId: string;
+  state: ExternalSubagentState;
+  agent?: string;
+  model?: string;
+  sessionId?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface ExternalSubagentFleetRun {
+  runId: string;
+  parentSessionId?: string;
+  state: ExternalSubagentState;
+  mode?: string;
+  model?: string;
+  startedAt?: number;
+  endedAt?: number;
+  lastActivityAt?: number;
+  durationMs?: number;
+  error?: string;
+  children: ExternalSubagentFleetChild[];
+}
+
+interface AsyncStatusStep {
+  agent?: string;
+  status?: string;
+  model?: string;
+  sessionFile?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  error?: string;
+}
+
 interface AsyncStatusFile {
   runId?: string;
   sessionId?: string;
+  mode?: string;
   state?: ExternalSubagentState;
   sessionFile?: string;
-  steps?: { sessionFile?: string; status?: string }[];
+  startedAt?: number;
+  endedAt?: number;
+  lastActivityAt?: number;
+  lastUpdate?: number;
+  durationMs?: number;
+  error?: string;
+  steps?: AsyncStatusStep[];
 }
 
 interface AsyncResultFile {
@@ -94,6 +139,7 @@ const PARENT_VISIBLE_STATES = new Set<ExternalSubagentState>([
   "stopped",
 ]);
 const deliveredCompletionKeys = new Set<string>();
+const fleetRunCache = new Map<string, { stamp: string; run: ExternalSubagentFleetRun }>();
 // Status files are rewritten repeatedly while a run is active. Remember every
 // delivered state transition so a poll/watch burst creates one sidebar update,
 // while queued → running → terminal transitions still propagate individually.
@@ -171,6 +217,154 @@ async function readStatusRoots(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function nonEmptyString(value: unknown, maxLength = 2000): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 1)}…`;
+}
+
+function durationFrom(
+  durationMs: unknown,
+  startedAt: number | undefined,
+  endedAt: number | undefined,
+): number | undefined {
+  const explicit = finiteNonNegative(durationMs);
+  if (explicit !== undefined) return explicit;
+  if (startedAt === undefined) return undefined;
+  return Math.max(0, (endedAt ?? Date.now()) - startedAt);
+}
+
+async function fleetCacheStamp(
+  statusPath: string,
+  resultPath: string,
+): Promise<string | undefined> {
+  try {
+    const statusInfo = await stat(statusPath);
+    let resultStamp = "missing";
+    try {
+      const resultInfo = await stat(resultPath);
+      resultStamp = `${resultInfo.mtimeMs}:${resultInfo.size}`;
+    } catch {
+      // A terminal status can land before its optional result artifact.
+    }
+    return `${statusInfo.mtimeMs}:${statusInfo.size}:${resultStamp}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fleetChildFrom(
+  runId: string,
+  index: number,
+  runState: ExternalSubagentState,
+  step: AsyncStatusStep | undefined,
+  result: NonNullable<AsyncResultFile["results"]>[number] | undefined,
+): Promise<ExternalSubagentFleetChild> {
+  const state = isExternalState(step?.status) ? step.status : runState;
+  const startedAt = finiteNonNegative(step?.startedAt);
+  const endedAt = finiteNonNegative(step?.endedAt);
+  const sessionFile = nonEmptyString(step?.sessionFile ?? result?.sessionFile, 16_384);
+  const sessionId = await sessionIdFromSessionReference(sessionFile);
+  const child: ExternalSubagentFleetChild = {
+    childId: `${runId}:${index}`,
+    state,
+  };
+  const agent = nonEmptyString(step?.agent ?? result?.agent, 200);
+  const model = nonEmptyString(step?.model, 300);
+  const error = nonEmptyString(step?.error ?? result?.error);
+  if (agent !== undefined) child.agent = agent;
+  if (model !== undefined) child.model = model;
+  if (sessionId !== undefined) child.sessionId = sessionId;
+  if (startedAt !== undefined) child.startedAt = startedAt;
+  if (endedAt !== undefined) child.endedAt = endedAt;
+  const durationMs = durationFrom(step?.durationMs, startedAt, endedAt);
+  if (durationMs !== undefined) child.durationMs = durationMs;
+  if (error !== undefined) child.error = error;
+  return child;
+}
+
+async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | undefined> {
+  const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
+  const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
+  const stamp = await fleetCacheStamp(statusPath, resultPath);
+  if (stamp === undefined) return undefined;
+  const cached = fleetRunCache.get(root);
+  if (
+    cached?.stamp === stamp &&
+    cached.run.parentSessionId !== undefined &&
+    cached.run.children.every((child) => child.sessionId !== undefined)
+  ) {
+    return cached.run;
+  }
+
+  const status = await readJson<AsyncStatusFile>(statusPath);
+  if (!isExternalState(status?.state)) return undefined;
+  const runId = nonEmptyString(status.runId, 500) ?? root;
+  const parentSessionId = await sessionIdFromSessionReference(status.sessionId);
+  const result = await readJson<AsyncResultFile>(resultPath);
+  const statusSteps = Array.isArray(status.steps) ? status.steps : [];
+  const resultSteps = Array.isArray(result?.results) ? result.results : [];
+  const childCount = Math.max(statusSteps.length, resultSteps.length);
+  const children = await Promise.all(
+    Array.from({ length: childCount }, (_, index) =>
+      fleetChildFrom(runId, index, status.state!, statusSteps[index], resultSteps[index]),
+    ),
+  );
+  const startedAt = finiteNonNegative(status.startedAt);
+  const endedAt = finiteNonNegative(status.endedAt);
+  const run: ExternalSubagentFleetRun = { runId, state: status.state, children };
+  const mode = nonEmptyString(status.mode, 100);
+  const error =
+    nonEmptyString(status.error) ?? children.find((child) => child.error !== undefined)?.error;
+  const models = Array.from(
+    new Set(
+      children.map((child) => child.model).filter((model): model is string => model !== undefined),
+    ),
+  );
+  if (parentSessionId !== undefined) run.parentSessionId = parentSessionId;
+  if (mode !== undefined) run.mode = mode;
+  const onlyModel = models.length === 1 ? models[0] : undefined;
+  if (onlyModel !== undefined) run.model = onlyModel;
+  if (startedAt !== undefined) run.startedAt = startedAt;
+  if (endedAt !== undefined) run.endedAt = endedAt;
+  const lastActivityAt = finiteNonNegative(status.lastActivityAt ?? status.lastUpdate);
+  if (lastActivityAt !== undefined) run.lastActivityAt = lastActivityAt;
+  const durationMs = durationFrom(status.durationMs, startedAt, endedAt);
+  if (durationMs !== undefined) run.durationMs = durationMs;
+  if (error !== undefined) run.error = error;
+
+  // A status write changes mtime whenever lifecycle details change. Cache the
+  // small, sanitized projection rather than repeatedly parsing potentially
+  // large recent-output fields on every fleet poll.
+  fleetRunCache.set(root, { stamp, run });
+  return run;
+}
+
+/**
+ * Read the pi-subagents lifecycle artifacts directly and return a sanitized,
+ * stable-id fleet projection. Both active and terminal runs are retained;
+ * malformed or partially-written status files are skipped until the next poll.
+ */
+export async function listExternalSubagentFleetRuns(): Promise<ExternalSubagentFleetRun[]> {
+  const runs = (
+    await Promise.all((await readStatusRoots()).map(async (root) => readFleetRun(root)))
+  ).filter((run): run is ExternalSubagentFleetRun => run !== undefined);
+  runs.sort((a, b) => {
+    const aActive = ACTIVE_STATES.has(a.state) ? 1 : 0;
+    const bActive = ACTIVE_STATES.has(b.state) ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    const aTime = a.lastActivityAt ?? a.endedAt ?? a.startedAt ?? 0;
+    const bTime = b.lastActivityAt ?? b.endedAt ?? b.startedAt ?? 0;
+    return bTime - aTime || a.runId.localeCompare(b.runId);
+  });
+  return runs;
 }
 
 function statusFileSessionPaths(status: AsyncStatusFile): string[] {
@@ -315,6 +509,9 @@ function formatCompletionContent(
 async function sessionIdFromSessionReference(ref: string | undefined): Promise<string | undefined> {
   if (ref === undefined) return undefined;
   if (getSession(ref) !== undefined) return ref;
+  // pi-subagents persists either an absolute JSONL path or the stable session
+  // id. Avoid a failing filesystem open for the common bare-id form.
+  if (!ref.includes("/") && !ref.includes("\\") && !ref.endsWith(".jsonl")) return ref;
   try {
     // Session headers are the first JSONL line. Never load an entire parent
     // transcript just to resolve it: a project may have many old async runs

@@ -16,6 +16,7 @@ import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
 import { sessionRoutes } from "./routes/sessions.js";
+import { subagentFleetRoutes } from "./routes/subagent-fleet.js";
 import { streamRoutes } from "./routes/stream.js";
 import { sessionActivityRoutes } from "./routes/session-activity.js";
 import { promptRoutes } from "./routes/prompt.js";
@@ -442,6 +443,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(authRoutes);
       await api.register(projectRoutes);
       await api.register(sessionRoutes);
+      await api.register(subagentFleetRoutes);
       await api.register(streamRoutes);
       await api.register(sessionActivityRoutes);
       await api.register(promptRoutes);

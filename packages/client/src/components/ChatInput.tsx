@@ -430,6 +430,7 @@ export function ChatInput({ sessionId }: Props) {
   // a synchronous handler defined below; commands that need server
   // I/O resolve via the existing api-client / store actions.
   const openSettings = useUiStore((s) => s.openSettings);
+  const openSubagentFleet = useUiStore((s) => s.openSubagentFleet);
   const chatInsertRequest = useUiStore((s) => s.chatInsertRequest);
   const clearChatInsertRequest = useUiStore((s) => s.clearChatInsertRequest);
   // Bumped by Settings → Prompts / Skills after every toggle so the slash
@@ -665,6 +666,12 @@ export function ChatInput({ sessionId }: Props) {
         run: () => openSettings("providers"),
       },
       {
+        name: "/subagent-fleet",
+        description: "Open the pi-subagents lifecycle fleet",
+        available: true,
+        run: () => openSubagentFleet(),
+      },
+      {
         name: "/help",
         description: minimalUi
           ? "Show what `/` and `@` do in the input"
@@ -687,6 +694,9 @@ export function ChatInput({ sessionId }: Props) {
     // invocation into the editor; submit then uses the ordinary prompt route
     // so the SDK can run the handler immediately, including while streaming.
     for (const command of [...extensionCommands].reverse()) {
+      // Forge owns this read-only lifecycle view. Do not dispatch a same-named
+      // extension command through the opaque custom-UI bridge.
+      if (command.name === "subagent-fleet") continue;
       commands.unshift({
         name: `/${command.name}`,
         description: command.description ?? "Extension command",
@@ -756,6 +766,7 @@ export function ChatInput({ sessionId }: Props) {
     abortSession,
     reloadMessages,
     openSettings,
+    openSubagentFleet,
     minimalUi,
     availablePrompts,
     availableSkills,
@@ -805,7 +816,9 @@ export function ChatInput({ sessionId }: Props) {
     if (!slashOpen) return false;
     const spaceIndex = text.indexOf(" ");
     const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-    return extensionCommands.some((command) => command.name === name);
+    return extensionCommands.some(
+      (command) => command.name === name && command.name !== "subagent-fleet",
+    );
   }, [slashOpen, text, extensionCommands]);
 
   /**

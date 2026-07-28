@@ -118,6 +118,11 @@ interface UiState {
    *  pane made visible, even if the user previously toggled it off. */
   openEditorPaneSeq: number;
   openEditorPane: () => void;
+
+  /** Read-only pi-subagents fleet view, opened by the `/subagent-fleet` command. */
+  subagentFleetOpen: boolean;
+  openSubagentFleet: () => void;
+  closeSubagentFleet: () => void;
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
@@ -168,4 +173,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   openProcessesTab: () => set((s) => ({ openProcessesTabSeq: s.openProcessesTabSeq + 1 })),
   openEditorPaneSeq: 0,
   openEditorPane: () => set((s) => ({ openEditorPaneSeq: s.openEditorPaneSeq + 1 })),
+  subagentFleetOpen: false,
+  openSubagentFleet: () => set({ subagentFleetOpen: true }),
+  closeSubagentFleet: () => set({ subagentFleetOpen: false }),
 }));

@@ -32,6 +32,9 @@ import {
   type ServerThemeColors,
   type UiConfigResponse,
   type UnifiedSession,
+  type SubagentFleetChild,
+  type SubagentFleetRun,
+  type SubagentFleetState,
   type ExtensionCommandSummary,
   type SessionSummary,
   type PromptSummary,
@@ -421,6 +424,76 @@ function vUnifiedSessionList(value: unknown, status: number): { sessions: Unifie
     fail(status, "expected { sessions: UnifiedSession[] }");
   }
   return { sessions: value.sessions.map((s) => vUnifiedSession(s, status)) };
+}
+
+function vSubagentFleetState(value: unknown, status: number): SubagentFleetState {
+  if (
+    value !== "queued" &&
+    value !== "running" &&
+    value !== "complete" &&
+    value !== "failed" &&
+    value !== "paused" &&
+    value !== "stopped"
+  ) {
+    fail(status, "expected pi-subagents lifecycle state");
+  }
+  return value;
+}
+
+function copyFleetMetadata(
+  value: Record<string, unknown>,
+  out: SubagentFleetRun | SubagentFleetChild,
+): void {
+  if (typeof value.model === "string") out.model = value.model;
+  if (typeof value.startedAt === "number" && Number.isFinite(value.startedAt)) {
+    out.startedAt = value.startedAt;
+  }
+  if (typeof value.endedAt === "number" && Number.isFinite(value.endedAt)) {
+    out.endedAt = value.endedAt;
+  }
+  if (typeof value.durationMs === "number" && Number.isFinite(value.durationMs)) {
+    out.durationMs = value.durationMs;
+  }
+  if (typeof value.error === "string") out.error = value.error;
+}
+
+function vSubagentFleetChild(value: unknown, status: number): SubagentFleetChild {
+  if (!isObject(value) || typeof value.childId !== "string") {
+    fail(status, "expected SubagentFleetChild");
+  }
+  const out: SubagentFleetChild = {
+    childId: value.childId,
+    state: vSubagentFleetState(value.state, status),
+  };
+  if (typeof value.agent === "string") out.agent = value.agent;
+  if (typeof value.sessionId === "string") out.sessionId = value.sessionId;
+  copyFleetMetadata(value, out);
+  return out;
+}
+
+function vSubagentFleet(value: unknown, status: number): { runs: SubagentFleetRun[] } {
+  if (!isObject(value) || !Array.isArray(value.runs)) {
+    fail(status, "expected { runs: SubagentFleetRun[] }");
+  }
+  return {
+    runs: value.runs.map((raw) => {
+      if (!isObject(raw) || typeof raw.runId !== "string" || !Array.isArray(raw.children)) {
+        fail(status, "expected SubagentFleetRun");
+      }
+      const run: SubagentFleetRun = {
+        runId: raw.runId,
+        state: vSubagentFleetState(raw.state, status),
+        children: raw.children.map((child) => vSubagentFleetChild(child, status)),
+      };
+      if (typeof raw.parentSessionId === "string") run.parentSessionId = raw.parentSessionId;
+      if (typeof raw.mode === "string") run.mode = raw.mode;
+      if (typeof raw.lastActivityAt === "number" && Number.isFinite(raw.lastActivityAt)) {
+        run.lastActivityAt = raw.lastActivityAt;
+      }
+      copyFleetMetadata(raw, run);
+      return run;
+    }),
+  };
 }
 
 function vSessionSummary(value: unknown, status: number): SessionSummary {
@@ -1861,6 +1934,7 @@ export const api = {
     const qs = projectId !== undefined ? `?projectId=${encodeURIComponent(projectId)}` : "";
     return request(`/api/v1/sessions${qs}`, vUnifiedSessionList);
   },
+  listSubagentFleet: () => request("/api/v1/subagent-fleet", vSubagentFleet),
   createSession: (projectId: string) =>
     request("/api/v1/sessions", vSessionSummary, {
       method: "POST",
