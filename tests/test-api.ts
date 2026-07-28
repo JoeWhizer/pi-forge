@@ -23,7 +23,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -107,6 +107,7 @@ async function main(): Promise<void> {
   const apiKey = "test-api-key-" + randomBytes(8).toString("hex");
   const port = await pickFreePort();
   let fleetFixturePath: string | undefined;
+  let supervisorFixturePath: string | undefined;
 
   const child: ChildProcess = spawn(process.execPath, [serverEntry], {
     cwd: repoRoot,
@@ -308,6 +309,140 @@ async function main(): Promise<void> {
         terminalStop.status === 409 &&
           (terminalStop.body as { error?: string }).error === "run_not_stoppable",
         JSON.stringify(terminalStop.body),
+      );
+    }
+
+    // Native supervisor requests are separate from steering: pi-subagents
+    // writes exact request/reply files under its supervisor channel.
+    {
+      const external = (await import(
+        resolve(repoRoot, "packages/server/dist/subagents-external.js")
+      )) as { SUBAGENTS_SUPERVISOR_CHANNEL_DIR: string };
+      const requestId = randomUUID();
+      const declineId = randomUUID();
+      const expiredId = randomUUID();
+      const parentSessionId = randomUUID();
+      const runId = `supervisor-run-${randomUUID()}`;
+      supervisorFixturePath = join(
+        external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+        `api-${randomUUID()}`,
+      );
+      const requestsDir = join(supervisorFixturePath, "requests");
+      await mkdir(join(supervisorFixturePath, "replies"), { recursive: true });
+      await mkdir(requestsDir, { recursive: true });
+      const request = (id: string, expiresAt: number) => ({
+        type: "subagent.supervisor.request",
+        id,
+        createdAt: Date.now(),
+        expiresAt,
+        reason: "need_decision",
+        message: "Should the browser use the native supervisor reply channel?",
+        expectsReply: true,
+        orchestratorSessionId: parentSessionId,
+        runId,
+        agent: "worker",
+        childIndex: 0,
+        interview: { title: "Protocol", questions: ["Proceed?"] },
+      });
+      await Promise.all([
+        writeFile(
+          join(requestsDir, `${requestId}.json`),
+          JSON.stringify(request(requestId, Date.now() + 60_000)),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${declineId}.json`),
+          JSON.stringify(request(declineId, Date.now() + 60_000)),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${expiredId}.json`),
+          JSON.stringify(request(expiredId, Date.now() - 1)),
+          "utf8",
+        ),
+      ]);
+
+      const listUrl = `${base}/api/v1/subagent-supervisor/requests`;
+      const anonymousList = await jget(listUrl);
+      assert("native supervisor requests require API authentication", anonymousList.status === 401);
+      const listed = await jget(listUrl, auth);
+      const open = (
+        listed.body as {
+          requests?: {
+            requestId?: string;
+            parentSessionId?: string;
+            runId?: string;
+            status?: string;
+            interview?: unknown;
+          }[];
+        }
+      ).requests?.find((item) => item.requestId === requestId);
+      assert(
+        "GET native supervisor requests exposes exact parent/run/request correlation",
+        listed.status === 200 &&
+          open?.parentSessionId === parentSessionId &&
+          open.runId === runId &&
+          open.status === "open" &&
+          open.interview !== undefined,
+        JSON.stringify(listed.body),
+      );
+      const replyUrl = `${listUrl}/${requestId}/reply`;
+      const [blankReply, extraReply] = await Promise.all([
+        jsend("POST", replyUrl, { message: "" }, auth),
+        jsend("POST", replyUrl, { message: "valid", unexpected: true }, auth),
+      ]);
+      assert(
+        "native supervisor reply validates body input",
+        blankReply.status === 400 && extraReply.status === 400,
+        JSON.stringify({ blankReply, extraReply }),
+      );
+      const [firstReply, racedReply] = await Promise.all([
+        jsend("POST", replyUrl, { message: "Use the browser-native channel." }, auth),
+        jsend("POST", replyUrl, { message: "This must not overwrite the first reply." }, auth),
+      ]);
+      assert(
+        "native supervisor reply is atomic across raced browser submissions",
+        [firstReply.status, racedReply.status].sort().join(",") === "202,409",
+        JSON.stringify({ firstReply, racedReply }),
+      );
+      const replyFile = JSON.parse(
+        await readFile(join(supervisorFixturePath, "replies", `${requestId}.json`), "utf8"),
+      ) as { message?: string };
+      assert(
+        "native supervisor reply preserves the first exact request reply",
+        replyFile.message === "Use the browser-native channel.",
+        JSON.stringify(replyFile),
+      );
+      await rm(join(requestsDir, `${requestId}.json`));
+      const recovered = await jget(listUrl, auth);
+      assert(
+        "answered supervisor status persists after request-file cleanup and reload",
+        (recovered.body as { requests?: { requestId?: string; status?: string }[] }).requests?.some(
+          (item) => item.requestId === requestId && item.status === "answered",
+        ) === true,
+        JSON.stringify(recovered.body),
+      );
+
+      const declined = await jsend("POST", `${listUrl}/${declineId}/decline`, {}, auth);
+      const declinedList = await jget(listUrl, auth);
+      assert(
+        "native supervisor decline sends a safe reply and persists cancelled status",
+        declined.status === 202 &&
+          (declined.body as { status?: string }).status === "cancelled" &&
+          (
+            declinedList.body as { requests?: { requestId?: string; status?: string }[] }
+          ).requests?.some(
+            (item) => item.requestId === declineId && item.status === "cancelled",
+          ) === true,
+        JSON.stringify({ declined: declined.body, list: declinedList.body }),
+      );
+      const expired = await jget(listUrl, auth);
+      assert(
+        "native supervisor expiry is projected only from its protocol deadline",
+        (expired.body as { requests?: { requestId?: string; status?: string }[] }).requests?.some(
+          (item) => item.requestId === expiredId && item.status === "expired",
+        ) === true,
+        JSON.stringify(expired.body),
       );
     }
 
@@ -648,6 +783,9 @@ async function main(): Promise<void> {
       ...(fleetFixturePath === undefined
         ? []
         : [rm(fleetFixturePath, { recursive: true, force: true })]),
+      ...(supervisorFixturePath === undefined
+        ? []
+        : [rm(supervisorFixturePath, { recursive: true, force: true })]),
     ]);
   }
 

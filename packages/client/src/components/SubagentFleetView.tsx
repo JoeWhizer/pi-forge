@@ -21,6 +21,7 @@ import {
   type SubagentFleetState,
   type SubagentFleetSteeringRequest,
   type SubagentFleetSteeringState,
+  type SubagentSupervisorRequest,
 } from "../lib/api-client";
 import {
   createSubagentFleetNavigationGuard,
@@ -46,6 +47,7 @@ interface Props {
 
 export function SubagentFleetView({ onClose }: Props) {
   const runs = useSubagentFleetStore((state) => state.runs);
+  const supervisorRequests = useSubagentFleetStore((state) => state.supervisorRequests);
   const hiddenRunIds = useSubagentFleetStore((state) => state.hiddenRunIds);
   const stoppingRunIds = useSubagentFleetStore((state) => state.stoppingRunIds);
   const expandedParents = useSubagentFleetStore((state) => state.expandedParents);
@@ -70,8 +72,14 @@ export function SubagentFleetView({ onClose }: Props) {
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
   const [stopConfirmationRunId, setStopConfirmationRunId] = useState<string | undefined>();
+  const [declineConfirmationRequestId, setDeclineConfirmationRequestId] = useState<
+    string | undefined
+  >();
   const stopConfirmationRunIdRef = useRef<string | undefined>(undefined);
   stopConfirmationRunIdRef.current = stopConfirmationRunId;
+  const declineConfirmationRequest = supervisorRequests.find(
+    (request) => request.requestId === declineConfirmationRequestId,
+  );
   const stopConfirmationCancelRef = useRef<HTMLButtonElement>(null);
   const stopConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
   const fleetContentRef = useRef<HTMLDivElement>(null);
@@ -87,7 +95,7 @@ export function SubagentFleetView({ onClose }: Props) {
   useEffect(() => () => navigationGuard.invalidate(), [navigationGuard]);
 
   useEffect(() => {
-    if (stopConfirmationRunId !== undefined) {
+    if (stopConfirmationRunId !== undefined || declineConfirmationRequest !== undefined) {
       stopConfirmationCancelRef.current?.focus();
       return;
     }
@@ -105,7 +113,7 @@ export function SubagentFleetView({ onClose }: Props) {
     } else {
       fleetContentRef.current?.focus();
     }
-  }, [stopConfirmationRunId]);
+  }, [stopConfirmationRunId, declineConfirmationRequest]);
 
   // Lifecycle artifacts can precede a child JSONL. Refresh session discovery
   // alongside fleet polling, then only enable navigation for discovered rows.
@@ -156,7 +164,25 @@ export function SubagentFleetView({ onClose }: Props) {
       cancelStopConfirmation();
       return;
     }
+    if (declineConfirmationRequest !== undefined) {
+      setDeclineConfirmationRequestId(undefined);
+      return;
+    }
     closeFleet();
+  };
+
+  const confirmDecline = (): void => {
+    const request = declineConfirmationRequest;
+    setDeclineConfirmationRequestId(undefined);
+    if (request === undefined) return;
+    void api.declineSubagentSupervisorRequest(request.requestId).then(
+      () => load(true),
+      (err: unknown) => {
+        const message =
+          err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message;
+        useSubagentFleetStore.setState({ error: message });
+      },
+    );
   };
 
   const openChildSession = (sessionId: string, projectId: string): void => {
@@ -188,7 +214,13 @@ export function SubagentFleetView({ onClose }: Props) {
       key="fleet"
       open
       onClose={handleModalClose}
-      title={stopConfirmationRunId !== undefined ? "Stop subagent" : "Subagent fleet"}
+      title={
+        stopConfirmationRunId !== undefined
+          ? "Stop subagent"
+          : declineConfirmationRequest !== undefined
+            ? "Decline supervisor request"
+            : "Subagent fleet"
+      }
       width="max-w-6xl"
     >
       {stopConfirmationRunId !== undefined && (
@@ -217,9 +249,33 @@ export function SubagentFleetView({ onClose }: Props) {
           </footer>
         </div>
       )}
+      {declineConfirmationRequest !== undefined && (
+        <div role="alert" className="flex flex-col gap-3 px-4 py-3">
+          <p className="text-xs text-neutral-300">
+            Declining sends a final native reply to {declineConfirmationRequest.agent} for this
+            exact request. pi-subagents has no separate cancellation operation.
+          </p>
+          <footer className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setDeclineConfirmationRequestId(undefined)}
+              className="rounded-md border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+            >
+              Keep open
+            </button>
+            <button
+              type="button"
+              onClick={confirmDecline}
+              className="rounded-md bg-red-700 px-3 py-1 text-xs font-medium text-red-50 hover:bg-red-600"
+            >
+              Decline request
+            </button>
+          </footer>
+        </div>
+      )}
       <div
         ref={fleetContentRef}
-        hidden={stopConfirmationRunId !== undefined}
+        hidden={stopConfirmationRunId !== undefined || declineConfirmationRequest !== undefined}
         tabIndex={-1}
         className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden"
       >
@@ -285,6 +341,11 @@ export function SubagentFleetView({ onClose }: Props) {
         )}
 
         <div className="flex-1 overflow-y-auto p-4">
+          <SupervisorRequests
+            requests={supervisorRequests}
+            onSubmitted={() => load(true)}
+            onDecline={(requestId) => setDeclineConfirmationRequestId(requestId)}
+          />
           {loading && visibleRuns.length === 0 ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-neutral-500">
               <Loader2 size={16} className="animate-spin" />
@@ -550,6 +611,150 @@ function SteeringRequest({ request }: { request: SubagentFleetSteeringRequest })
             .map((target) => target.reason)
             .filter((reason): reason is string => reason !== undefined)
             .join(" ")}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function supervisorRequestStatusLabel(status: SubagentSupervisorRequest["status"]): string {
+  return {
+    open: "open",
+    answered: "answered",
+    cancelled: "declined",
+    expired: "expired",
+  }[status];
+}
+
+function SupervisorRequests({
+  requests,
+  onSubmitted,
+  onDecline,
+}: {
+  requests: SubagentSupervisorRequest[];
+  onSubmitted: () => Promise<void>;
+  onDecline: (requestId: string) => void;
+}) {
+  if (requests.length === 0) return null;
+  return (
+    <section className="mb-4 rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 light:border-amber-300 light:bg-amber-50">
+      <h2 className="text-sm font-medium text-amber-100 light:text-amber-900">
+        Supervisor requests
+      </h2>
+      <p className="mt-1 text-[11px] text-amber-200/80 light:text-amber-800">
+        Native pi-subagents requests are correlated to their parent session, run, and request id.
+      </p>
+      <ul className="mt-3 space-y-2">
+        {requests.map((request) => (
+          <SupervisorRequestRow
+            key={request.requestId}
+            request={request}
+            onSubmitted={onSubmitted}
+            onDecline={onDecline}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function SupervisorRequestRow({
+  request,
+  onSubmitted,
+  onDecline,
+}: {
+  request: SubagentSupervisorRequest;
+  onSubmitted: () => Promise<void>;
+  onDecline: (requestId: string) => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const canReply = request.status === "open" && request.expectsReply;
+  const submit = async (): Promise<void> => {
+    if (!canReply || sending || !answer.trim()) return;
+    setSending(true);
+    setError(undefined);
+    try {
+      await api.replySubagentSupervisorRequest(request.requestId, answer.trim());
+      setAnswer("");
+      await onSubmitted();
+    } catch (err) {
+      setError(err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+  let interview: string | undefined;
+  if (request.interview !== undefined) {
+    try {
+      interview = JSON.stringify(request.interview, null, 2);
+    } catch {
+      interview = "(Structured interview context could not be rendered.)";
+    }
+  }
+  return (
+    <li className="rounded border border-amber-800/60 bg-neutral-950/60 p-2.5 text-xs light:border-amber-200 light:bg-white">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+        <span className={request.status === "open" ? "text-amber-300" : "text-neutral-400"}>
+          {sending ? "sending" : supervisorRequestStatusLabel(request.status)}
+        </span>
+        <span>{request.reason.replace("_", " ")}</span>
+        <span>{formatSteeringTimestamp(request.createdAt)}</span>
+        {request.expiresAt !== undefined && request.status === "open" && (
+          <span>expires {formatSteeringTimestamp(request.expiresAt)}</span>
+        )}
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-neutral-100 light:text-neutral-900">
+        {request.message}
+      </div>
+      {interview !== undefined && (
+        <pre className="mt-2 max-h-40 overflow-auto rounded bg-neutral-900 p-2 text-[11px] text-neutral-300 light:bg-neutral-100 light:text-neutral-700">
+          {interview}
+        </pre>
+      )}
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 font-mono text-[10px] text-neutral-500">
+        <dt>parentSessionId</dt>
+        <dd className="break-all">{request.parentSessionId}</dd>
+        <dt>runId</dt>
+        <dd className="break-all">{request.runId}</dd>
+        <dt>requestId</dt>
+        <dd className="break-all">{request.requestId}</dd>
+      </dl>
+      {canReply && (
+        <div className="mt-3">
+          <textarea
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+            rows={3}
+            maxLength={65536}
+            placeholder="Reply to this exact supervisor request"
+            className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 light:border-neutral-300 light:bg-white light:text-neutral-900"
+          />
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => onDecline(request.requestId)}
+              disabled={sending}
+              className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-200 hover:bg-red-950/60 disabled:opacity-50 light:border-red-300 light:text-red-800"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={sending || answer.trim().length === 0}
+              className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
+            >
+              <Send size={11} />
+              {sending ? "Sending…" : "Reply"}
+            </button>
+          </div>
+        </div>
+      )}
+      {error !== undefined && (
+        <div className="mt-2 rounded border border-red-800/60 bg-red-950/30 px-2 py-1.5 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800">
+          {error}
         </div>
       )}
     </li>

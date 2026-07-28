@@ -40,6 +40,10 @@ import {
   type SubagentFleetSteeringTarget,
   type SubagentFleetSteerResponse,
   type SubagentFleetStopResponse,
+  type SubagentSupervisorRequest,
+  type SubagentSupervisorRequestStatus,
+  type SubagentSupervisorRequestReason,
+  type SubagentSupervisorReplyResponse,
   type ExtensionCommandSummary,
   type SessionSummary,
   type PromptSummary,
@@ -429,6 +433,83 @@ function vUnifiedSessionList(value: unknown, status: number): { sessions: Unifie
     fail(status, "expected { sessions: UnifiedSession[] }");
   }
   return { sessions: value.sessions.map((s) => vUnifiedSession(s, status)) };
+}
+
+function vSubagentSupervisorStatus(
+  value: unknown,
+  status: number,
+): SubagentSupervisorRequestStatus {
+  if (value !== "open" && value !== "answered" && value !== "cancelled" && value !== "expired") {
+    fail(status, "expected pi-subagents supervisor request status");
+  }
+  return value;
+}
+
+function vSubagentSupervisorReason(
+  value: unknown,
+  status: number,
+): SubagentSupervisorRequestReason {
+  if (value !== "need_decision" && value !== "interview_request" && value !== "progress_update") {
+    fail(status, "expected pi-subagents supervisor request reason");
+  }
+  return value;
+}
+
+function vSubagentSupervisorRequests(
+  value: unknown,
+  status: number,
+): { requests: SubagentSupervisorRequest[] } {
+  if (!isObject(value) || !Array.isArray(value.requests))
+    fail(status, "expected { requests: [...] }");
+  return {
+    requests: value.requests.map((raw) => {
+      if (
+        !isObject(raw) ||
+        typeof raw.requestId !== "string" ||
+        typeof raw.parentSessionId !== "string" ||
+        typeof raw.runId !== "string" ||
+        typeof raw.agent !== "string" ||
+        typeof raw.childIndex !== "number" ||
+        !Number.isInteger(raw.childIndex) ||
+        typeof raw.expectsReply !== "boolean" ||
+        typeof raw.createdAt !== "number" ||
+        !Number.isFinite(raw.createdAt) ||
+        typeof raw.message !== "string"
+      ) {
+        fail(status, "expected pi-subagents supervisor request");
+      }
+      const request: SubagentSupervisorRequest = {
+        requestId: raw.requestId,
+        parentSessionId: raw.parentSessionId,
+        runId: raw.runId,
+        agent: raw.agent,
+        childIndex: raw.childIndex,
+        reason: vSubagentSupervisorReason(raw.reason, status),
+        expectsReply: raw.expectsReply,
+        createdAt: raw.createdAt,
+        message: raw.message,
+        status: vSubagentSupervisorStatus(raw.status, status),
+      };
+      if (typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt))
+        request.expiresAt = raw.expiresAt;
+      if (typeof raw.repliedAt === "number" && Number.isFinite(raw.repliedAt))
+        request.repliedAt = raw.repliedAt;
+      if (raw.interview !== undefined) request.interview = raw.interview;
+      return request;
+    }),
+  };
+}
+
+function vSubagentSupervisorReply(value: unknown, status: number): SubagentSupervisorReplyResponse {
+  if (
+    !isObject(value) ||
+    value.accepted !== true ||
+    (value.status !== "answered" && value.status !== "cancelled") ||
+    typeof value.repliedAt !== "number" ||
+    !Number.isFinite(value.repliedAt)
+  )
+    fail(status, "expected accepted pi-subagents supervisor reply");
+  return { accepted: true, status: value.status, repliedAt: value.repliedAt };
 }
 
 function vSubagentFleetState(value: unknown, status: number): SubagentFleetState {
@@ -2028,6 +2109,20 @@ export const api = {
     request(
       `/api/v1/subagent-fleet${forceRefresh ? `?refresh=${Date.now()}` : ""}`,
       vSubagentFleet,
+    ),
+  listSubagentSupervisorRequests: () =>
+    request("/api/v1/subagent-supervisor/requests", vSubagentSupervisorRequests),
+  replySubagentSupervisorRequest: (requestId: string, message: string) =>
+    request(
+      `/api/v1/subagent-supervisor/requests/${encodeURIComponent(requestId)}/reply`,
+      vSubagentSupervisorReply,
+      { method: "POST", body: { message } },
+    ),
+  declineSubagentSupervisorRequest: (requestId: string, message?: string) =>
+    request(
+      `/api/v1/subagent-supervisor/requests/${encodeURIComponent(requestId)}/decline`,
+      vSubagentSupervisorReply,
+      { method: "POST", body: message === undefined ? {} : { message } },
     ),
   steerSubagentFleetRun: (runId: string, text: string) =>
     request(

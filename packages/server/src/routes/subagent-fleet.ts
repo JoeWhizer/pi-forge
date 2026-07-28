@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
 import {
   listExternalSubagentFleetRuns,
+  listExternalSupervisorRequests,
+  replyExternalSupervisorRequest,
   queueExternalSubagentSteer,
   queueExternalSubagentStop,
 } from "../subagents-external.js";
@@ -48,8 +50,139 @@ const steeringSchema = {
   },
 } as const;
 
+const supervisorStatusSchema = {
+  type: "string",
+  enum: ["open", "answered", "cancelled", "expired"],
+} as const;
+
+const supervisorRequestSchema = {
+  type: "object",
+  required: [
+    "requestId",
+    "parentSessionId",
+    "runId",
+    "agent",
+    "childIndex",
+    "reason",
+    "expectsReply",
+    "createdAt",
+    "message",
+    "status",
+  ],
+  properties: {
+    requestId: { type: "string" },
+    parentSessionId: { type: "string" },
+    runId: { type: "string" },
+    agent: { type: "string" },
+    childIndex: { type: "integer", minimum: 0 },
+    reason: { type: "string", enum: ["need_decision", "interview_request", "progress_update"] },
+    expectsReply: { type: "boolean" },
+    createdAt: { type: "number", minimum: 0 },
+    expiresAt: { type: "number", minimum: 0 },
+    message: { type: "string" },
+    interview: {},
+    status: supervisorStatusSchema,
+    repliedAt: { type: "number", minimum: 0 },
+  },
+} as const;
+
+const supervisorReplyResponseSchema = {
+  type: "object",
+  required: ["accepted", "status", "repliedAt"],
+  properties: {
+    accepted: { const: true },
+    status: { type: "string", enum: ["answered", "cancelled"] },
+    repliedAt: { type: "number", minimum: 0 },
+  },
+} as const;
+
 /** Lifecycle view and conservative steer control over pi-subagents artifacts. */
 export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.get(
+    "/subagent-supervisor/requests",
+    {
+      schema: {
+        description:
+          "List persisted pi-subagents native supervisor requests with exact parent, run, and request correlation.",
+        tags: ["sessions"],
+        response: {
+          200: {
+            type: "object",
+            required: ["requests"],
+            properties: { requests: { type: "array", items: supervisorRequestSchema } },
+          },
+        },
+      },
+    },
+    async () => ({ requests: await listExternalSupervisorRequests() }),
+  );
+
+  for (const action of ["reply", "decline"] as const) {
+    fastify.post<{ Params: { requestId: string }; Body: { message?: string } }>(
+      `/subagent-supervisor/requests/:requestId/${action}`,
+      {
+        config: {
+          rateLimit: {
+            max: config.rateLimits.promptMax,
+            timeWindow: config.rateLimits.promptWindowMs,
+          },
+        },
+        schema: {
+          description:
+            action === "reply"
+              ? "Atomically answer one exact pi-subagents native supervisor request."
+              : "Atomically decline one exact pi-subagents native supervisor request with a safe reply.",
+          tags: ["sessions"],
+          params: {
+            type: "object",
+            required: ["requestId"],
+            properties: { requestId: { type: "string", minLength: 1, maxLength: 256 } },
+          },
+          body: {
+            type: "object",
+            additionalProperties: { not: {} },
+            properties: { message: { type: "string", minLength: 1, maxLength: 65536 } },
+            ...(action === "reply" ? { required: ["message"] } : {}),
+          },
+          response: {
+            202: supervisorReplyResponseSchema,
+            404: {
+              type: "object",
+              required: ["error", "message"],
+              properties: { error: { const: "request_not_found" }, message: { type: "string" } },
+            },
+            409: {
+              type: "object",
+              required: ["error", "message"],
+              properties: {
+                error: {
+                  type: "string",
+                  enum: ["request_not_open", "request_expired", "request_already_answered"],
+                },
+                message: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+      async (req, reply) => {
+        const message =
+          action === "decline"
+            ? req.body?.message?.trim() || "Declined by supervisor."
+            : req.body?.message;
+        const result = await replyExternalSupervisorRequest(
+          req.params.requestId,
+          message ?? "",
+          action === "decline",
+        );
+        if (result.accepted) return reply.code(202).send(result);
+        return reply
+          .code(result.code === "request_not_found" ? 404 : 409)
+          .send({ error: result.code, message: result.message });
+      },
+    );
+  }
+
   fastify.get<{ Querystring: { refresh?: string } }>(
     "/subagent-fleet",
     {

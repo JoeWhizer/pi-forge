@@ -1,11 +1,24 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import {
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import * as os from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getSession } from "./session-registry.js";
+import { config } from "./config.js";
+import { makeLock } from "./concurrency.js";
 
 export type ExternalSubagentState =
   | "queued"
@@ -192,6 +205,399 @@ function resolveTempScopeId(): string {
 export const SUBAGENTS_TEMP_ROOT = join(os.tmpdir(), `pi-subagents-${resolveTempScopeId()}`);
 export const SUBAGENTS_RESULTS_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-results");
 export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-runs");
+/** pi-subagents 0.37 native supervisor request/reply filesystem channel. */
+export const SUBAGENTS_SUPERVISOR_CHANNEL_DIR = join(SUBAGENTS_TEMP_ROOT, "supervisor-channels");
+
+export type ExternalSupervisorRequestStatus = "open" | "answered" | "cancelled" | "expired";
+export type ExternalSupervisorRequestReason =
+  | "need_decision"
+  | "interview_request"
+  | "progress_update";
+
+/** A sanitized, correlated projection of pi-subagents' native supervisor channel. */
+export interface ExternalSupervisorRequest {
+  requestId: string;
+  parentSessionId: string;
+  runId: string;
+  agent: string;
+  childIndex: number;
+  reason: ExternalSupervisorRequestReason;
+  expectsReply: boolean;
+  createdAt: number;
+  expiresAt?: number;
+  message: string;
+  interview?: unknown;
+  status: ExternalSupervisorRequestStatus;
+  repliedAt?: number;
+}
+
+interface SupervisorRequestFile {
+  type?: unknown;
+  id?: unknown;
+  createdAt?: unknown;
+  expiresAt?: unknown;
+  reason?: unknown;
+  message?: unknown;
+  expectsReply?: unknown;
+  orchestratorSessionId?: unknown;
+  runId?: unknown;
+  agent?: unknown;
+  childIndex?: unknown;
+  interview?: unknown;
+}
+
+interface SupervisorReplyFile {
+  type?: unknown;
+  requestId?: unknown;
+  createdAt?: unknown;
+  message?: unknown;
+}
+
+interface SupervisorRequestRecord extends ExternalSupervisorRequest {
+  channelDir: string;
+}
+
+const SUPERVISOR_HISTORY_PATH = join(config.forgeDataDir, "subagent-supervisor-requests.json");
+const MAX_SUPERVISOR_HISTORY = 500;
+const supervisorRequestLock = makeLock();
+
+function isSafeSupervisorId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9._-]{1,256}$/.test(value);
+}
+
+function safeSupervisorString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || Buffer.byteLength(trimmed, "utf8") > maxLength) return undefined;
+  return trimmed;
+}
+
+function finiteTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function withinSupervisorRoot(path: string): boolean {
+  const rel = relative(resolve(SUBAGENTS_SUPERVISOR_CHANNEL_DIR), resolve(path));
+  return rel !== "" && !rel.startsWith("..") && !rel.includes("\\");
+}
+
+function parseSupervisorRequest(
+  file: string,
+  channelDir: string,
+): SupervisorRequestRecord | undefined {
+  if (!withinSupervisorRoot(channelDir)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as SupervisorRequestFile;
+    const requestId = isSafeSupervisorId(parsed.id) ? parsed.id : undefined;
+    const parentSessionId = safeSupervisorString(parsed.orchestratorSessionId, 256);
+    const runId = safeSupervisorString(parsed.runId, 4096);
+    const agent = safeSupervisorString(parsed.agent, 256);
+    const message = safeSupervisorString(parsed.message, 64 * 1024);
+    const createdAt = finiteTimestamp(parsed.createdAt);
+    const reason = parsed.reason;
+    if (
+      requestId === undefined ||
+      parentSessionId === undefined ||
+      runId === undefined ||
+      agent === undefined ||
+      message === undefined ||
+      createdAt === undefined ||
+      typeof parsed.childIndex !== "number" ||
+      !Number.isInteger(parsed.childIndex) ||
+      (reason !== "need_decision" &&
+        reason !== "interview_request" &&
+        reason !== "progress_update") ||
+      typeof parsed.expectsReply !== "boolean"
+    )
+      return undefined;
+    const expiresAt = finiteTimestamp(parsed.expiresAt);
+    return {
+      requestId,
+      parentSessionId,
+      runId,
+      agent,
+      childIndex: parsed.childIndex,
+      reason,
+      expectsReply: parsed.expectsReply,
+      createdAt,
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+      message,
+      ...(parsed.interview === undefined ? {} : { interview: parsed.interview }),
+      status: "open",
+      channelDir,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
+  let channels: import("node:fs").Dirent[];
+  try {
+    channels = await readdir(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const entries = await Promise.all(
+    channels
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .map(async (entry) => {
+        const channelDir = join(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, entry.name);
+        let files: import("node:fs").Dirent[];
+        try {
+          files = await readdir(join(channelDir, "requests"), { withFileTypes: true });
+        } catch {
+          return [] as SupervisorRequestRecord[];
+        }
+        return (
+          await Promise.all(
+            files
+              .filter(
+                (file) => file.isFile() && !file.isSymbolicLink() && file.name.endsWith(".json"),
+              )
+              .map((entry) =>
+                readFile(join(channelDir, "requests", entry.name), "utf8")
+                  .then(() =>
+                    parseSupervisorRequest(join(channelDir, "requests", entry.name), channelDir),
+                  )
+                  .catch(() => undefined),
+              ),
+          )
+        ).filter((request): request is SupervisorRequestRecord => request !== undefined);
+      }),
+  );
+  const requests = entries.flat();
+  const counts = new Map<string, number>();
+  for (const request of requests) {
+    counts.set(request.requestId, (counts.get(request.requestId) ?? 0) + 1);
+  }
+  // A request id must identify exactly one channel. Treat duplicate files as
+  // malformed rather than risking a reply being routed to the wrong child.
+  return requests.filter((request) => counts.get(request.requestId) === 1);
+}
+
+async function readSupervisorHistory(): Promise<ExternalSupervisorRequest[]> {
+  const parsed = await readJson<{ requests?: unknown }>(SUPERVISOR_HISTORY_PATH);
+  if (!Array.isArray(parsed?.requests)) return [];
+  return parsed.requests.filter((request): request is ExternalSupervisorRequest => {
+    if (!request || typeof request !== "object") return false;
+    const value = request as Partial<ExternalSupervisorRequest>;
+    return (
+      isSafeSupervisorId(value.requestId) &&
+      typeof value.parentSessionId === "string" &&
+      typeof value.runId === "string" &&
+      typeof value.agent === "string" &&
+      typeof value.childIndex === "number" &&
+      Number.isInteger(value.childIndex) &&
+      (value.reason === "need_decision" ||
+        value.reason === "interview_request" ||
+        value.reason === "progress_update") &&
+      typeof value.expectsReply === "boolean" &&
+      typeof value.createdAt === "number" &&
+      typeof value.message === "string" &&
+      (value.status === "open" ||
+        value.status === "answered" ||
+        value.status === "cancelled" ||
+        value.status === "expired")
+    );
+  });
+}
+
+async function writeSupervisorHistory(requests: ExternalSupervisorRequest[]): Promise<void> {
+  await mkdir(config.forgeDataDir, { recursive: true });
+  const temporary = `${SUPERVISOR_HISTORY_PATH}.${randomUUID()}.tmp`;
+  await writeFile(
+    temporary,
+    JSON.stringify({ requests: requests.slice(0, MAX_SUPERVISOR_HISTORY) }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+  await rename(temporary, SUPERVISOR_HISTORY_PATH);
+}
+
+function replyFileFor(request: SupervisorRequestRecord): string {
+  return join(request.channelDir, "replies", `${request.requestId}.json`);
+}
+
+async function readSupervisorReply(
+  path: string,
+  requestId: string,
+): Promise<SupervisorReplyFile | undefined> {
+  const parsed = await readJson<SupervisorReplyFile>(path);
+  return parsed?.type === "subagent.supervisor.reply" &&
+    parsed.requestId === requestId &&
+    typeof parsed.message === "string"
+    ? parsed
+    : undefined;
+}
+
+function supervisorStatus(
+  request: SupervisorRequestRecord,
+  reply: SupervisorReplyFile | undefined,
+  now: number,
+): ExternalSupervisorRequestStatus {
+  if (reply !== undefined) return "answered";
+  return request.expiresAt !== undefined && now > request.expiresAt ? "expired" : "open";
+}
+
+function publicSupervisorRequest(
+  record: SupervisorRequestRecord | ExternalSupervisorRequest,
+): ExternalSupervisorRequest {
+  const { channelDir: _channelDir, ...request } = record as SupervisorRequestRecord;
+  return request;
+}
+
+export type ExternalSupervisorReplyResult =
+  | { accepted: true; status: "answered" | "cancelled"; repliedAt: number }
+  | {
+      accepted: false;
+      code:
+        | "request_not_found"
+        | "request_not_open"
+        | "request_expired"
+        | "request_already_answered";
+      message: string;
+    };
+
+/**
+ * List and durably project requests from pi-subagents 0.37's native channel.
+ * Only requests with the exact orchestrator session, run, and request id are
+ * exposed; malformed or cross-channel files are ignored.
+ */
+export async function listExternalSupervisorRequests(): Promise<ExternalSupervisorRequest[]> {
+  return supervisorRequestLock(async () => {
+    const now = Date.now();
+    const history = await readSupervisorHistory();
+    const byId = new Map(history.map((request) => [request.requestId, request]));
+    const live = await readSupervisorRequests();
+    for (const request of live) {
+      if (!request.expectsReply) continue;
+      const reply = await readSupervisorReply(replyFileFor(request), request.requestId);
+      const prior = byId.get(request.requestId);
+      const status =
+        prior?.status === "cancelled" ? "cancelled" : supervisorStatus(request, reply, now);
+      const replyCreatedAt = reply === undefined ? undefined : finiteTimestamp(reply.createdAt);
+      byId.set(request.requestId, {
+        ...publicSupervisorRequest(request),
+        status,
+        ...(replyCreatedAt !== undefined
+          ? { repliedAt: replyCreatedAt }
+          : prior?.repliedAt === undefined
+            ? {}
+            : { repliedAt: prior.repliedAt }),
+      });
+    }
+    const projected = [...byId.values()]
+      .filter(
+        (request) =>
+          request.status !== "open" ||
+          live.some((liveRequest) => liveRequest.requestId === request.requestId),
+      )
+      .sort((a, b) => b.createdAt - a.createdAt || a.requestId.localeCompare(b.requestId));
+    await writeSupervisorHistory(projected);
+    return projected.map(publicSupervisorRequest);
+  });
+}
+
+/**
+ * Atomically reply to one exact native request. `link()` makes a concurrent
+ * browser/terminal reply fail rather than replacing the first reply file.
+ */
+export async function replyExternalSupervisorRequest(
+  requestId: string,
+  message: string,
+  declined = false,
+): Promise<ExternalSupervisorReplyResult> {
+  return supervisorRequestLock(async () => {
+    if (!isSafeSupervisorId(requestId)) {
+      return {
+        accepted: false,
+        code: "request_not_found",
+        message: "The supervisor request was not found.",
+      };
+    }
+    const normalized = message.trim();
+    if (!normalized || Buffer.byteLength(normalized, "utf8") > 64 * 1024) {
+      return {
+        accepted: false,
+        code: "request_not_open",
+        message: "A supervisor reply must contain at most 64 KiB of text.",
+      };
+    }
+    const request = (await readSupervisorRequests()).find(
+      (candidate) => candidate.requestId === requestId && candidate.expectsReply,
+    );
+    if (request === undefined) {
+      return {
+        accepted: false,
+        code: "request_not_found",
+        message: "The supervisor request is no longer open.",
+      };
+    }
+    const replyPath = replyFileFor(request);
+    if ((await readSupervisorReply(replyPath, requestId)) !== undefined) {
+      return {
+        accepted: false,
+        code: "request_already_answered",
+        message: "This supervisor request already has a reply.",
+      };
+    }
+    if (request.expiresAt !== undefined && Date.now() > request.expiresAt) {
+      return {
+        accepted: false,
+        code: "request_expired",
+        message: "This supervisor request has expired.",
+      };
+    }
+    const repliedAt = Date.now();
+    const temporary = join(request.channelDir, "replies", `.${requestId}.${randomUUID()}.tmp`);
+    const reply = {
+      type: "subagent.supervisor.reply",
+      requestId,
+      createdAt: repliedAt,
+      message: normalized,
+    };
+    try {
+      const repliesDir = join(request.channelDir, "replies");
+      await mkdir(repliesDir, { recursive: true, mode: 0o700 });
+      const repliesInfo = await lstat(repliesDir);
+      if (!repliesInfo.isDirectory() || repliesInfo.isSymbolicLink()) {
+        return {
+          accepted: false,
+          code: "request_not_open",
+          message: "The native supervisor reply channel is unavailable.",
+        };
+      }
+      await writeFile(temporary, JSON.stringify(reply), { encoding: "utf8", mode: 0o600 });
+      await link(temporary, replyPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        return {
+          accepted: false,
+          code: "request_already_answered",
+          message: "This supervisor request already has a reply.",
+        };
+      }
+      return {
+        accepted: false,
+        code: "request_not_open",
+        message: "The native supervisor reply channel is unavailable.",
+      };
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+    const history = await readSupervisorHistory();
+    const status = declined ? ("cancelled" as const) : ("answered" as const);
+    const projected: ExternalSupervisorRequest = {
+      ...publicSupervisorRequest(request),
+      status,
+      repliedAt,
+    };
+    const retained = history.filter((record) => record.requestId !== requestId);
+    retained.push(projected);
+    await writeSupervisorHistory(retained);
+    return { accepted: true, status, repliedAt };
+  });
+}
 
 const TERMINAL_STATES = new Set<ExternalSubagentState>(["complete", "failed", "paused", "stopped"]);
 const ACTIVE_STATES = new Set<ExternalSubagentState>(["queued", "running"]);

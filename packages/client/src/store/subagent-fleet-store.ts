@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import { api, ApiError, type SubagentFleetRun } from "../lib/api-client";
+import {
+  api,
+  ApiError,
+  type SubagentFleetRun,
+  type SubagentSupervisorRequest,
+} from "../lib/api-client";
 import { isCleanableSubagentFleetState, toggleSubagentFleetExpanded } from "../lib/subagent-fleet";
 
 const POLL_INTERVAL_MS = 3_000;
@@ -8,6 +13,7 @@ let loadGeneration = 0;
 
 interface SubagentFleetState {
   runs: SubagentFleetRun[];
+  supervisorRequests: SubagentSupervisorRequest[];
   hiddenRunIds: string[];
   stoppingRunIds: string[];
   expandedParents: Record<string, boolean>;
@@ -28,6 +34,7 @@ interface SubagentFleetState {
 
 export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   runs: [],
+  supervisorRequests: [],
   hiddenRunIds: [],
   stoppingRunIds: [],
   expandedParents: {},
@@ -44,10 +51,14 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
       error: undefined,
     }));
     try {
-      const { runs } = await api.listSubagentFleet(forceRefresh);
+      const [{ runs }, { requests: supervisorRequests }] = await Promise.all([
+        api.listSubagentFleet(forceRefresh),
+        api.listSubagentSupervisorRequests(),
+      ]);
       if (generation !== loadGeneration) return;
       set((state) => ({
         runs,
+        supervisorRequests,
         stoppingRunIds: state.stoppingRunIds.filter((runId) =>
           runs.some((run) => run.runId === runId && run.state === "running"),
         ),

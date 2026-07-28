@@ -49,6 +49,16 @@ async function main(): Promise<void> {
     "utf8",
   );
   assert(
+    "Fleet renders browser-native supervisor requests with exact correlation and safe decline",
+    fleetViewSource.includes("SupervisorRequests") &&
+      fleetViewSource.includes("parentSessionId") &&
+      fleetViewSource.includes("requestId") &&
+      fleetViewSource.includes("replySubagentSupervisorRequest") &&
+      fleetViewSource.includes("declineSubagentSupervisorRequest") &&
+      fleetViewSource.includes("pi-subagents has no separate cancellation operation") &&
+      !fleetViewSource.includes("pause supervisor"),
+  );
+  assert(
     "Fleet stop confirmation remains a single modal state with accessible cancellation",
     (fleetViewSource.match(/<Modal(?:\s|>)/g)?.length ?? 0) === 1 &&
       !fleetViewSource.includes("ConfirmDialog") &&
