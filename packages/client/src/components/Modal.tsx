@@ -1,6 +1,10 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 
+// Only the topmost dialog may handle keyboard events. Multiple dialogs can be
+// mounted at once, for example a destructive confirmation over another modal.
+const modalStack: symbol[] = [];
+
 /**
  * Visual primitive for modal dialogs. Replaces the built-in
  * `window.prompt` / `window.confirm` calls that some browser configs
@@ -61,6 +65,8 @@ export function Modal({
 
   useEffect(() => {
     if (!open) return undefined;
+    const modalId = Symbol("modal");
+    modalStack.push(modalId);
     // Capture the trigger so we can restore focus to it on close —
     // standard a11y pattern, keeps keyboard users on the same row of
     // the UI they just acted on. Also snapshot the dialog DOM node
@@ -69,6 +75,9 @@ export function Modal({
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const dialogNode = dialogRef.current;
     const onKey = (e: KeyboardEvent): void => {
+      // A nested confirmation must consume Escape and Tab before its parent
+      // modal sees them, otherwise one keypress closes both dialogs.
+      if (modalStack[modalStack.length - 1] !== modalId) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onCloseRef.current();
@@ -110,6 +119,8 @@ export function Modal({
     }, 0);
     return () => {
       document.removeEventListener("keydown", onKey);
+      const index = modalStack.indexOf(modalId);
+      if (index !== -1) modalStack.splice(index, 1);
       window.clearTimeout(id);
       // Restore focus only if it's still inside our dialog. If the
       // user clicked elsewhere on the page since open, don't yank
