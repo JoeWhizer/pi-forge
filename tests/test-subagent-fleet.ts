@@ -44,6 +44,20 @@ async function writeSession(path: string, id: string): Promise<void> {
 
 async function main(): Promise<void> {
   process.env.NODE_ENV = "test";
+  const fleetViewSource = await readFile(
+    resolve(repoRoot, "packages/client/src/components/SubagentFleetView.tsx"),
+    "utf8",
+  );
+  assert(
+    "Fleet stop confirmation remains a single modal state with accessible cancellation",
+    (fleetViewSource.match(/<Modal(?:\s|>)/g)?.length ?? 0) === 1 &&
+      !fleetViewSource.includes("ConfirmDialog") &&
+      fleetViewSource.includes("onClose={handleModalClose}") &&
+      fleetViewSource.includes("if (stopConfirmationRunIdRef.current !== undefined)") &&
+      fleetViewSource.includes('<div role="alert"') &&
+      fleetViewSource.includes("stopConfirmationCancelRef.current?.focus()") &&
+      fleetViewSource.includes("disabled={stoppingRunIds.includes(run.runId)}"),
+  );
   const external = (await import(
     resolve(repoRoot, "packages/server/dist/subagents-external.js")
   )) as {

@@ -38,7 +38,7 @@ import {
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
 import { useSubagentFleetStore } from "../store/subagent-fleet-store";
-import { ConfirmDialog, Modal } from "./Modal";
+import { Modal } from "./Modal";
 
 interface Props {
   onClose: () => void;
@@ -70,6 +70,12 @@ export function SubagentFleetView({ onClose }: Props) {
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
   const [stopConfirmationRunId, setStopConfirmationRunId] = useState<string | undefined>();
+  const stopConfirmationRunIdRef = useRef<string | undefined>(undefined);
+  stopConfirmationRunIdRef.current = stopConfirmationRunId;
+  const stopConfirmationCancelRef = useRef<HTMLButtonElement>(null);
+  const stopConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
+  const fleetContentRef = useRef<HTMLDivElement>(null);
+  const stopConfirmationDismissalRef = useRef<"cancel" | "confirm" | undefined>(undefined);
   const navigationGuardRef = useRef(createSubagentFleetNavigationGuard());
   const navigationGuard = navigationGuardRef.current;
 
@@ -79,6 +85,27 @@ export function SubagentFleetView({ onClose }: Props) {
   }, [startPolling, stopPolling]);
 
   useEffect(() => () => navigationGuard.invalidate(), [navigationGuard]);
+
+  useEffect(() => {
+    if (stopConfirmationRunId !== undefined) {
+      stopConfirmationCancelRef.current?.focus();
+      return;
+    }
+    const dismissal = stopConfirmationDismissalRef.current;
+    if (dismissal === undefined) return;
+    stopConfirmationDismissalRef.current = undefined;
+    const trigger = stopConfirmationTriggerRef.current;
+    if (
+      dismissal === "cancel" &&
+      trigger !== null &&
+      document.contains(trigger) &&
+      !trigger.disabled
+    ) {
+      trigger.focus();
+    } else {
+      fleetContentRef.current?.focus();
+    }
+  }, [stopConfirmationRunId]);
 
   // Lifecycle artifacts can precede a child JSONL. Refresh session discovery
   // alongside fleet polling, then only enable navigation for discovered rows.
@@ -109,6 +136,29 @@ export function SubagentFleetView({ onClose }: Props) {
     onClose();
   };
 
+  const cancelStopConfirmation = (): void => {
+    stopConfirmationRunIdRef.current = undefined;
+    stopConfirmationDismissalRef.current = "cancel";
+    setStopConfirmationRunId(undefined);
+  };
+
+  const confirmStop = (): void => {
+    const runId = stopConfirmationRunIdRef.current;
+    if (runId === undefined) return;
+    stopConfirmationRunIdRef.current = undefined;
+    stopConfirmationDismissalRef.current = "confirm";
+    setStopConfirmationRunId(undefined);
+    void stopRun(runId);
+  };
+
+  const handleModalClose = (): void => {
+    if (stopConfirmationRunIdRef.current !== undefined) {
+      cancelStopConfirmation();
+      return;
+    }
+    closeFleet();
+  };
+
   const openChildSession = (sessionId: string, projectId: string): void => {
     // The button is only enabled for a child returned by session discovery.
     // Avoid probing a not-yet-created id, which used to surface session_not_found.
@@ -134,8 +184,45 @@ export function SubagentFleetView({ onClose }: Props) {
         }).format(lastRefreshedAt);
 
   return [
-    <Modal key="fleet" open onClose={closeFleet} title="Subagent fleet" width="max-w-6xl">
-      <div className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden">
+    <Modal
+      key="fleet"
+      open
+      onClose={handleModalClose}
+      title={stopConfirmationRunId !== undefined ? "Stop subagent" : "Subagent fleet"}
+      width="max-w-6xl"
+    >
+      {stopConfirmationRunId !== undefined && (
+        <div role="alert" className="flex flex-col gap-3 px-4 py-3">
+          <p id="fleet-stop-confirmation-message" className="text-xs text-neutral-300">
+            Stopping this running subagent is permanent. It cannot be resumed; start a new run if
+            needed.
+          </p>
+          <footer className="flex justify-end gap-2 pt-1">
+            <button
+              ref={stopConfirmationCancelRef}
+              type="button"
+              onClick={cancelStopConfirmation}
+              className="rounded-md border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmStop}
+              aria-describedby="fleet-stop-confirmation-message"
+              className="rounded-md bg-red-700 px-3 py-1 text-xs font-medium text-red-50 hover:bg-red-600"
+            >
+              Stop run
+            </button>
+          </footer>
+        </div>
+      )}
+      <div
+        ref={fleetContentRef}
+        hidden={stopConfirmationRunId !== undefined}
+        tabIndex={-1}
+        className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden"
+      >
         <header className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-2 text-xs text-neutral-400 light:border-neutral-200 light:text-neutral-600">
           <span>{activeCount} active</span>
           <span aria-hidden>·</span>
@@ -312,7 +399,11 @@ export function SubagentFleetView({ onClose }: Props) {
                                 {isStoppableSubagentFleetRun(run) && (
                                   <button
                                     type="button"
-                                    onClick={() => setStopConfirmationRunId(run.runId)}
+                                    onClick={(event) => {
+                                      stopConfirmationTriggerRef.current = event.currentTarget;
+                                      stopConfirmationRunIdRef.current = run.runId;
+                                      setStopConfirmationRunId(run.runId);
+                                    }}
                                     disabled={stoppingRunIds.includes(run.runId)}
                                     aria-label={`Stop run ${run.runId}`}
                                     title={
@@ -380,21 +471,6 @@ export function SubagentFleetView({ onClose }: Props) {
         </div>
       </div>
     </Modal>,
-    <ConfirmDialog
-      key="stop-confirmation"
-      open={stopConfirmationRunId !== undefined}
-      onClose={() => setStopConfirmationRunId(undefined)}
-      onConfirm={() => {
-        if (stopConfirmationRunId === undefined) return;
-        const runId = stopConfirmationRunId;
-        setStopConfirmationRunId(undefined);
-        void stopRun(runId);
-      }}
-      title="Stop subagent"
-      message="Stopping this running subagent is permanent. It cannot be resumed; start a new run if needed."
-      primaryLabel="Stop run"
-      tone="danger"
-    />,
   ];
 }
 
