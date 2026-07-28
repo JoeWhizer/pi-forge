@@ -55,9 +55,12 @@ async function main(): Promise<void> {
   const index = (await import(
     resolve(repoRoot, "packages/server/dist/session-index.js")
   )) as typeof import("../packages/server/src/session-index.js");
+  let records = [record];
+  let delayScan: Promise<void> | undefined;
   const discover = async () => {
     scans += 1;
-    return [record];
+    await delayScan;
+    return records;
   };
 
   try {
@@ -114,6 +117,34 @@ async function main(): Promise<void> {
     );
     await index.getIndexedProjectSessions(projectId, sessionDir, projectSessionDir, discover);
     assert("reset forces the next lookup to rebuild", scans === 3);
+
+    let releaseDelayedScan!: () => void;
+    index.invalidateSessionIndex(projectId);
+    delayScan = new Promise<void>((resolveDelay) => {
+      releaseDelayedScan = resolveDelay;
+    });
+    const staleRebuild = index.getIndexedProjectSessions(
+      projectId,
+      sessionDir,
+      projectSessionDir,
+      discover,
+    );
+    while (scans !== 4) await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
+    await index.resetSessionIndex(projectId);
+    records = [{ ...record, sessionId: "fresh-session" }];
+    releaseDelayedScan();
+    await staleRebuild;
+    delayScan = undefined;
+    const refreshed = await index.getIndexedProjectSessions(
+      projectId,
+      sessionDir,
+      projectSessionDir,
+      discover,
+    );
+    assert(
+      "delayed stale rebuild cannot repopulate a reset generation",
+      scans === 5 && refreshed[0]?.sessionId === "fresh-session",
+    );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
     await rm(sessionDir, { recursive: true, force: true });

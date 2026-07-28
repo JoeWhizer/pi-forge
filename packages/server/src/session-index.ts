@@ -67,10 +67,15 @@ interface ProjectCache {
 }
 
 const projects = new Map<string, ProjectCache>();
+const projectGenerations = new Map<string, number>();
 let persisted: PersistedIndex = { version: INDEX_VERSION, projects: {} };
 let loaded = false;
 const writeLock = makeLock();
 const rebuildInflight = makeDedupe<string, IndexedSession[]>();
+
+function projectGeneration(projectId: string): number {
+  return projectGenerations.get(projectId) ?? 0;
+}
 
 function indexPath(): string {
   return `${config.forgeDataDir}/session-index.json`;
@@ -344,18 +349,24 @@ async function rebuildProject(
   sessionDir: string,
   discover: () => Promise<IndexedSession[]>,
 ): Promise<IndexedSession[]> {
-  return rebuildInflight(projectId, async () => {
+  const generation = projectGeneration(projectId);
+  return rebuildInflight(`${projectId}:${generation}`, async () => {
     const sessions = await discover();
+    // A refresh/reset may have started while this source scan was in flight.
+    // Never let its stale result repopulate the cache after that newer generation.
+    if (generation !== projectGeneration(projectId)) return sessions;
+    const footprint = await fingerprint([
+      ...pathsToWatch(sessionDir, sessions),
+      ...sessions.map((session) => session.path),
+    ]);
+    if (generation !== projectGeneration(projectId)) return sessions;
     const cache: ProjectCache = {
       workspacePath,
       sessionDir,
       sessions,
       dirty: false,
       lastReconciledAt: Date.now(),
-      footprint: await fingerprint([
-        ...pathsToWatch(sessionDir, sessions),
-        ...sessions.map((session) => session.path),
-      ]),
+      footprint,
       watchers: [],
       needsPreviewHydration: false,
     };
@@ -402,6 +413,7 @@ export function invalidateSessionIndex(projectId: string): void {
  */
 export async function resetSessionIndex(projectId: string): Promise<void> {
   await ensureLoaded();
+  projectGenerations.set(projectId, projectGeneration(projectId) + 1);
   const cache = projects.get(projectId);
   if (cache !== undefined) {
     for (const watcher of cache.watchers) watcher.close();

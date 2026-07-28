@@ -868,6 +868,40 @@ async function main(): Promise<void> {
       `got runId=${deepChildEntry?.runId}`,
     );
 
+    const malformedLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-1",
+      "session.jsonl",
+    );
+    const foreignLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-2",
+      "session.jsonl",
+    );
+    await writeChildSessionFile(malformedLiteralPath, "invalid session id", project.path);
+    await writeChildSessionFile(foreignLiteralPath, randomUUID(), join(workspacePath, "other"));
+    const malformedLiteralSource = await readFile(malformedLiteralPath, "utf8");
+    const foreignLiteralSource = await readFile(foreignLiteralPath, "utf8");
+    const validatedLiteralDiscovery = await registry.discoverSessionsOnDisk(
+      project.id,
+      project.path,
+    );
+    assert(
+      "literal child parser rejects malformed session ids and foreign workspace cwd",
+      !validatedLiteralDiscovery.some(
+        (d) => d.path === malformedLiteralPath || d.path === foreignLiteralPath,
+      ),
+    );
+    assert(
+      "rejected literal children are never rewritten",
+      (await readFile(malformedLiteralPath, "utf8")) === malformedLiteralSource &&
+        (await readFile(foreignLiteralPath, "utf8")) === foreignLiteralSource,
+    );
+
     // 8b. FLAT layout (no runId subdir): some pi-subagents run modes
     // write children directly under <parentBasename>/, not under
     // <parentBasename>/<runId>/. Discovery must surface these too.

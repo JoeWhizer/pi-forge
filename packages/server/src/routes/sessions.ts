@@ -229,6 +229,7 @@ export const sessionRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Params: { projectId: string } }>(
     "/projects/:projectId/session-index/refresh",
     {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
       schema: {
         description:
           "Clear only the derived session index cache and rebuild this project's session discovery.",

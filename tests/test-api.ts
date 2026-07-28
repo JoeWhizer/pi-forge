@@ -787,6 +787,16 @@ async function main(): Promise<void> {
         refreshed.status === 200 &&
           Array.isArray((refreshed.body as { sessions?: unknown }).sessions),
       );
+      const refreshBurst = await Promise.all(
+        Array.from({ length: 11 }, () =>
+          jsend("POST", `${base}/api/v1/projects/${projectId}/session-index/refresh`, {}, auth),
+        ),
+      );
+      assert(
+        "session-index refresh burst is route-rate-limited",
+        refreshBurst.some((response) => response.status === 429),
+        `statuses=${refreshBurst.map((response) => response.status).join(",")}`,
+      );
     }
 
     let sessionId: string;
