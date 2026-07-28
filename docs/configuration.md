@@ -367,8 +367,17 @@ other pi-subagents extension commands unchanged. It reads pi-subagents
 lifecycle artifacts through an authenticated Forge API and groups runs by their
 stable `parentSessionId` and `runId`. Active and terminal runs remain visible
 with model, duration, and error details when the installed pi-subagents version
-records them. A child session can be opened through Forge's normal session
-navigation when the artifact contains a valid child session file.
+records them. A non-zero child process exit code is projected as `failed`, even
+when the launcher status artifact says `complete`. A child session can be opened
+through Forge's normal session navigation only after normal session discovery
+finds it; until then Fleet shows a disabled “Waiting for session discovery”
+control rather than probing an unresolved id.
+
+Fleet reload bypasses its in-memory artifact projection cache and reports when
+new data arrived. Parent and run rows are collapsible (active work starts
+expanded; terminal history starts compact). **Clean** hides only completed,
+failed, and stopped rows in the local Fleet view. **Reset** restores those rows;
+neither action deletes or changes sessions, artifacts, or server state.
 
 Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
 request is not reliable. When an externally observed run reports `paused`,

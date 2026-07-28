@@ -56,6 +56,35 @@ export function isActiveSubagentFleetState(state: SubagentFleetState): boolean {
   return state === "queued" || state === "running";
 }
 
+/** Clean only hides finished runs locally; paused runs remain visible for follow-up. */
+export function isCleanableSubagentFleetState(state: SubagentFleetState): boolean {
+  return state === "complete" || state === "failed" || state === "stopped";
+}
+
+export function filterCleanedSubagentFleetRuns(
+  runs: readonly SubagentFleetRun[],
+  hiddenRunIds: ReadonlySet<string>,
+): SubagentFleetRun[] {
+  return runs.filter((run) => !hiddenRunIds.has(run.runId));
+}
+
+/** Active work is expanded by default; historical terminal work stays compact. */
+export function shouldExpandSubagentFleetRuns(runs: readonly SubagentFleetRun[]): boolean {
+  return runs.some((run) => isActiveSubagentFleetState(run.state));
+}
+
+export function shouldExpandSubagentFleetRun(run: SubagentFleetRun): boolean {
+  return isActiveSubagentFleetState(run.state);
+}
+
+/** A lifecycle artifact is not navigable until normal session discovery resolves it. */
+export function isSubagentFleetChildSessionDiscovered(
+  sessionId: string | undefined,
+  discoveredSessionIds: ReadonlySet<string>,
+): boolean {
+  return sessionId !== undefined && discoveredSessionIds.has(sessionId);
+}
+
 /** Keep arbitrary lifecycle ids from expanding a fleet card beyond the viewport. */
 export function truncateSubagentFleetRunId(runId: string, maximumLength = 80): string {
   if (runId.length <= maximumLength) return runId;

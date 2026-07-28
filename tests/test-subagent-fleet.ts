@@ -1,12 +1,16 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   createSubagentFleetNavigationGuard,
+  filterCleanedSubagentFleetRuns,
   formatSubagentDuration,
   groupSubagentFleetRuns,
+  isSubagentFleetChildSessionDiscovered,
+  shouldExpandSubagentFleetRun,
+  shouldExpandSubagentFleetRuns,
   truncateSubagentFleetRunId,
 } from "../packages/client/src/lib/subagent-fleet";
 import type { SubagentFleetRun } from "../packages/client/src/lib/api-client/types";
@@ -43,17 +47,19 @@ async function main(): Promise<void> {
   )) as {
     SUBAGENTS_ASYNC_DIR: string;
     SUBAGENTS_RESULTS_DIR: string;
-    listExternalSubagentFleetRuns: () => Promise<SubagentFleetRun[]>;
+    listExternalSubagentFleetRuns: (forceRefresh?: boolean) => Promise<SubagentFleetRun[]>;
     _hasExternalSubagentFleetRunCacheEntryForTests: (root: string) => boolean;
   };
 
   const activeRoot = `fleet-active-${randomUUID()}`;
   const failedRoot = `fleet-failed-${randomUUID()}`;
   const malformedRoot = `fleet-malformed-${randomUUID()}`;
+  const processFailedRoot = `fleet-process-failed-${randomUUID()}`;
   // These collide in the 500-character prefix formerly used by the server.
   const longRunIdPrefix = `stable-run-${"r".repeat(500)}`;
   const activeRunId = `${longRunIdPrefix}-active`;
   const failedRunId = `${longRunIdPrefix}-failed`;
+  const processFailedRunId = `${longRunIdPrefix}-exit-1`;
   const parentSessionId = randomUUID();
   const activeChildSessionId = randomUUID();
   const failedChildSessionId = randomUUID();
@@ -66,7 +72,9 @@ async function main(): Promise<void> {
     join(external.SUBAGENTS_ASYNC_DIR, activeRoot),
     join(external.SUBAGENTS_ASYNC_DIR, failedRoot),
     join(external.SUBAGENTS_ASYNC_DIR, malformedRoot),
+    join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot),
     join(external.SUBAGENTS_RESULTS_DIR, `${failedRoot}.json`),
+    join(external.SUBAGENTS_RESULTS_DIR, `${processFailedRoot}.json`),
     fixtureDir,
   ];
 
@@ -123,6 +131,29 @@ async function main(): Promise<void> {
       }),
       "utf8",
     );
+    await mkdir(join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot), { recursive: true });
+    await writeFile(
+      join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot, "status.json"),
+      JSON.stringify({
+        runId: processFailedRunId,
+        sessionId: parentSessionId,
+        state: "complete",
+        steps: [{ agent: "worker", status: "complete" }],
+      }),
+      "utf8",
+    );
+    await mkdir(external.SUBAGENTS_RESULTS_DIR, { recursive: true });
+    await writeFile(
+      join(external.SUBAGENTS_RESULTS_DIR, `${processFailedRoot}.json`),
+      JSON.stringify({
+        runId: processFailedRunId,
+        sessionId: parentSessionId,
+        success: false,
+        results: [{ agent: "worker", exitCode: 1 }],
+      }),
+      "utf8",
+    );
+
     await mkdir(join(external.SUBAGENTS_ASYNC_DIR, malformedRoot), { recursive: true });
     await writeFile(
       join(external.SUBAGENTS_ASYNC_DIR, malformedRoot, "status.json"),
@@ -153,6 +184,7 @@ async function main(): Promise<void> {
     const allRuns = await external.listExternalSubagentFleetRuns();
     const active = allRuns.find((run) => run.runId === activeRunId);
     const failed = allRuns.find((run) => run.runId === failedRunId);
+    const processFailed = allRuns.find((run) => run.runId === processFailedRunId);
     assert(
       "fleet preserves full stable run identities beyond 500 characters",
       active?.parentSessionId === parentSessionId &&
@@ -180,6 +212,26 @@ async function main(): Promise<void> {
       JSON.stringify(failed),
     );
     assert(
+      "non-zero pi-subagent exit code projects completed status as failed",
+      processFailed?.state === "failed" &&
+        processFailed.children[0]?.state === "failed" &&
+        processFailed.error === "Subagent exited with code 1" &&
+        processFailed.children[0]?.error === "Subagent exited with code 1",
+      JSON.stringify(processFailed),
+    );
+    const activeStatusPath = join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "status.json");
+    const activeStatus = JSON.parse(await readFile(activeStatusPath, "utf8")) as {
+      lastActivityAt: number;
+    };
+    activeStatus.lastActivityAt = 3_000;
+    await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
+    const forcedRuns = await external.listExternalSubagentFleetRuns(true);
+    assert(
+      "forced Fleet reload reads updated lifecycle artifacts",
+      forcedRuns.find((run) => run.runId === activeRunId)?.lastActivityAt === 3_000,
+    );
+
+    assert(
       "active runs sort before terminal runs",
       allRuns.findIndex((run) => run.runId === activeRunId) <
         allRuns.findIndex((run) => run.runId === failedRunId),
@@ -204,6 +256,24 @@ async function main(): Promise<void> {
     );
     const oversizedRunId = "r".repeat(160);
     assert(
+      "Clean filters only selected Fleet rows and hierarchy defaults expand active work",
+      filterCleanedSubagentFleetRuns(allRuns, new Set([failedRunId, processFailedRunId])).every(
+        (run) => run.runId !== failedRunId && run.runId !== processFailedRunId,
+      ) &&
+        shouldExpandSubagentFleetRuns([active!]) &&
+        !shouldExpandSubagentFleetRuns([failed!]) &&
+        shouldExpandSubagentFleetRun(active!) &&
+        !shouldExpandSubagentFleetRun(failed!),
+    );
+    assert(
+      "child navigation waits for normal session discovery before it is enabled",
+      !isSubagentFleetChildSessionDiscovered(activeChildSessionId, new Set()) &&
+        isSubagentFleetChildSessionDiscovered(
+          activeChildSessionId,
+          new Set([activeChildSessionId]),
+        ),
+    );
+    assert(
       "fleet run ids are safely truncated for narrow cards",
       truncateSubagentFleetRunId(oversizedRunId) === `${"r".repeat(79)}…` &&
         truncateSubagentFleetRunId("short-run") === "short-run",
@@ -227,6 +297,7 @@ async function main(): Promise<void> {
     await Promise.all([
       rm(join(external.SUBAGENTS_ASYNC_DIR, activeRoot), { recursive: true, force: true }),
       rm(join(external.SUBAGENTS_ASYNC_DIR, failedRoot), { recursive: true, force: true }),
+      rm(join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot), { recursive: true, force: true }),
     ]);
     await external.listExternalSubagentFleetRuns();
     assert(

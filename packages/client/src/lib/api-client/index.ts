@@ -1934,7 +1934,11 @@ export const api = {
     const qs = projectId !== undefined ? `?projectId=${encodeURIComponent(projectId)}` : "";
     return request(`/api/v1/sessions${qs}`, vUnifiedSessionList);
   },
-  listSubagentFleet: () => request("/api/v1/subagent-fleet", vSubagentFleet),
+  listSubagentFleet: (forceRefresh = false) =>
+    request(
+      `/api/v1/subagent-fleet${forceRefresh ? `?refresh=${Date.now()}` : ""}`,
+      vSubagentFleet,
+    ),
   createSession: (projectId: string) =>
     request("/api/v1/sessions", vSessionSummary, {
       method: "POST",

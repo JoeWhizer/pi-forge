@@ -14,13 +14,17 @@ const optionalTimestampProperties = {
 
 /** Read-only lifecycle view over pi-subagents' native status artifacts. */
 export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.get(
+  fastify.get<{ Querystring: { refresh?: string } }>(
     "/subagent-fleet",
     {
       schema: {
         description:
           "List active and terminal pi-subagents runs with stable parent, run, and child session ids.",
         tags: ["sessions"],
+        querystring: {
+          type: "object",
+          properties: { refresh: { type: "string" } },
+        },
         response: {
           200: {
             type: "object",
@@ -64,6 +68,6 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
         },
       },
     },
-    async () => ({ runs: await listExternalSubagentFleetRuns() }),
+    async (req) => ({ runs: await listExternalSubagentFleetRuns(req.query.refresh !== undefined) }),
   );
 };

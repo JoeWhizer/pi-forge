@@ -55,6 +55,8 @@ export interface ExternalSubagentFleetRun {
 interface AsyncStatusStep {
   agent?: string;
   status?: string;
+  success?: boolean;
+  exitCode?: number;
   model?: string;
   sessionFile?: string;
   startedAt?: number;
@@ -68,6 +70,8 @@ interface AsyncStatusFile {
   sessionId?: string;
   mode?: string;
   state?: ExternalSubagentState;
+  success?: boolean;
+  exitCode?: number;
   sessionFile?: string;
   startedAt?: number;
   endedAt?: number;
@@ -78,23 +82,28 @@ interface AsyncStatusFile {
   steps?: AsyncStatusStep[];
 }
 
+interface AsyncResult {
+  agent?: string;
+  output?: string;
+  finalOutput?: string;
+  success?: boolean;
+  exitCode?: number;
+  error?: string;
+  sessionFile?: string;
+}
+
 interface AsyncResultFile {
   id?: string;
   runId?: string;
   agent?: string;
   success?: boolean;
+  exitCode?: number;
+  error?: string;
   summary?: string;
   state?: string;
   sessionId?: string;
   sessionFile?: string;
-  results?: {
-    agent?: string;
-    output?: string;
-    finalOutput?: string;
-    success?: boolean;
-    error?: string;
-    sessionFile?: string;
-  }[];
+  results?: AsyncResult[];
 }
 
 function sanitizeTempScopeSegment(value: string): string {
@@ -181,11 +190,18 @@ async function readStatusByRoot(
   const status = rawStatus ?? (await readJson<AsyncStatusFile>(statusPath));
   if (!isExternalState(status?.state)) return undefined;
   const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
+  const result = existsSync(resultPath) ? await readJson<AsyncResultFile>(resultPath) : undefined;
+  const state = projectedState(
+    status.state,
+    hasFailedResult(status) || status.steps?.some((step) => hasFailedResult(step))
+      ? { success: false }
+      : result,
+  );
   const out: ExternalSubagentStatus = {
     runId: status.runId ?? root,
     rootRunId: root,
-    state: status.state,
-    isExternalLive: ACTIVE_STATES.has(status.state),
+    state,
+    isExternalLive: ACTIVE_STATES.has(state),
     statusPath,
   };
   if (existsSync(resultPath)) out.resultPath = resultPath;
@@ -237,6 +253,47 @@ function stableRunId(value: unknown): string | undefined {
   return value;
 }
 
+interface AsyncOutcome {
+  success?: boolean;
+  exitCode?: number;
+}
+
+function hasFailedResult(result: AsyncOutcome | undefined): boolean {
+  return (
+    result?.success === false ||
+    (typeof result?.exitCode === "number" &&
+      Number.isFinite(result.exitCode) &&
+      result.exitCode !== 0)
+  );
+}
+
+function statusStepsHaveFailure(steps: AsyncStatusStep[] | undefined): boolean {
+  return steps?.some((step) => hasFailedResult(step)) === true;
+}
+
+function resultFailureError(
+  result: AsyncResult | AsyncResultFile | AsyncStatusStep | undefined,
+): string | undefined {
+  const error = nonEmptyString(result?.error);
+  if (error !== undefined) return error;
+  if (
+    typeof result?.exitCode === "number" &&
+    Number.isFinite(result.exitCode) &&
+    result.exitCode !== 0
+  ) {
+    return `Subagent exited with code ${result.exitCode}`;
+  }
+  return result?.success === false ? "Subagent reported failure" : undefined;
+}
+
+/** A completed launcher can still contain a failed child process result. */
+function projectedState(
+  statusState: ExternalSubagentState,
+  result: AsyncOutcome | undefined,
+): ExternalSubagentState {
+  return statusState === "complete" && hasFailedResult(result) ? "failed" : statusState;
+}
+
 function durationFrom(
   durationMs: unknown,
   startedAt: number | undefined,
@@ -274,7 +331,8 @@ async function fleetChildFrom(
   step: AsyncStatusStep | undefined,
   result: NonNullable<AsyncResultFile["results"]>[number] | undefined,
 ): Promise<ExternalSubagentFleetChild> {
-  const state = isExternalState(step?.status) ? step.status : runState;
+  const statusState = isExternalState(step?.status) ? step.status : runState;
+  const state = projectedState(projectedState(statusState, step), result);
   const startedAt = finiteNonNegative(step?.startedAt);
   const endedAt = finiteNonNegative(step?.endedAt);
   const sessionFile = nonEmptyString(step?.sessionFile ?? result?.sessionFile, 16_384);
@@ -285,7 +343,9 @@ async function fleetChildFrom(
   };
   const agent = nonEmptyString(step?.agent ?? result?.agent, 200);
   const model = nonEmptyString(step?.model, 300);
-  const error = nonEmptyString(step?.error ?? result?.error);
+  const error = nonEmptyString(
+    step?.error ?? resultFailureError(step) ?? resultFailureError(result),
+  );
   if (agent !== undefined) child.agent = agent;
   if (model !== undefined) child.model = model;
   if (sessionId !== undefined) child.sessionId = sessionId;
@@ -322,13 +382,17 @@ function cacheFleetRun(
   boundFleetRunCache();
 }
 
-async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | undefined> {
+async function readFleetRun(
+  root: string,
+  forceRefresh = false,
+): Promise<ExternalSubagentFleetRun | undefined> {
   const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
   const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
   const stamp = await fleetCacheStamp(statusPath, resultPath);
   if (stamp === undefined) return undefined;
   const cached = fleetRunCache.get(root);
   if (
+    !forceRefresh &&
     cached?.stamp === stamp &&
     cached.run.parentSessionId !== undefined &&
     cached.run.children.every((child) => child.sessionId !== undefined)
@@ -342,20 +406,26 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
   const runId = stableRunId(status.runId) ?? root;
   const parentSessionId = await sessionIdFromSessionReference(status.sessionId);
   const result = await readJson<AsyncResultFile>(resultPath);
+  const runState = projectedState(
+    status.state,
+    hasFailedResult(status) || statusStepsHaveFailure(status.steps) ? { success: false } : result,
+  );
   const statusSteps = Array.isArray(status.steps) ? status.steps : [];
   const resultSteps = Array.isArray(result?.results) ? result.results : [];
   const childCount = Math.max(statusSteps.length, resultSteps.length);
   const children = await Promise.all(
     Array.from({ length: childCount }, (_, index) =>
-      fleetChildFrom(runId, index, status.state!, statusSteps[index], resultSteps[index]),
+      fleetChildFrom(runId, index, runState, statusSteps[index], resultSteps[index]),
     ),
   );
   const startedAt = finiteNonNegative(status.startedAt);
   const endedAt = finiteNonNegative(status.endedAt);
-  const run: ExternalSubagentFleetRun = { runId, state: status.state, children };
+  const run: ExternalSubagentFleetRun = { runId, state: runState, children };
   const mode = nonEmptyString(status.mode, 100);
   const error =
-    nonEmptyString(status.error) ?? children.find((child) => child.error !== undefined)?.error;
+    nonEmptyString(status.error) ??
+    children.find((child) => child.error !== undefined)?.error ??
+    resultFailureError(result);
   const models = Array.from(
     new Set(
       children.map((child) => child.model).filter((model): model is string => model !== undefined),
@@ -385,14 +455,16 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
  * stable-id fleet projection. Both active and terminal runs are retained;
  * malformed or partially-written status files are skipped until the next poll.
  */
-export async function listExternalSubagentFleetRuns(): Promise<ExternalSubagentFleetRun[]> {
+export async function listExternalSubagentFleetRuns(
+  forceRefresh = false,
+): Promise<ExternalSubagentFleetRun[]> {
   const roots = await readStatusRoots();
   // Lifecycle directories can be deleted by pi-subagents. Remove their
   // projections before every poll so the process does not retain stale runs.
   pruneFleetRunCache(new Set(roots));
-  const runs = (await Promise.all(roots.map(async (root) => readFleetRun(root)))).filter(
-    (run): run is ExternalSubagentFleetRun => run !== undefined,
-  );
+  const runs = (
+    await Promise.all(roots.map(async (root) => readFleetRun(root, forceRefresh)))
+  ).filter((run): run is ExternalSubagentFleetRun => run !== undefined);
   runs.sort((a, b) => {
     const aActive = ACTIVE_STATES.has(a.state) ? 1 : 0;
     const bActive = ACTIVE_STATES.has(b.state) ? 1 : 0;
