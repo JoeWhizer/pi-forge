@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   open,
+  opendir,
   readdir,
   readFile,
   rename,
@@ -258,6 +259,10 @@ const SUPERVISOR_HISTORY_PATH = join(config.forgeDataDir, "subagent-supervisor-r
 const MAX_SUPERVISOR_HISTORY = 500;
 const MAX_SUPERVISOR_ARTIFACT_BYTES = 64 * 1024;
 const MAX_SUPERVISOR_ARTIFACTS = 500;
+export const MAX_SUPERVISOR_CHANNEL_ENTRIES_PER_REFRESH = 500;
+export const MAX_SUPERVISOR_CHANNELS_PER_REFRESH = 500;
+export const MAX_SUPERVISOR_FILES_PER_REFRESH = 500;
+export const MAX_SUPERVISOR_FILES_PER_CHANNEL = 50;
 const MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES = 8 * 1024;
 const MAX_PERSISTED_SUPERVISOR_INTERVIEW_BYTES = 16 * 1024;
 const supervisorRequestLock = makeLock();
@@ -380,27 +385,58 @@ function parseSupervisorRequest(
   };
 }
 
-async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
-  let channels: import("node:fs").Dirent[];
+async function readSupervisorDirectoryEntries(
+  path: string,
+  maximum: number,
+): Promise<import("node:fs").Dirent[]> {
   try {
-    channels = await readdir(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, { withFileTypes: true });
+    const directory = await opendir(path);
+    const entries: import("node:fs").Dirent[] = [];
+    try {
+      while (entries.length < maximum) {
+        const entry = await directory.read();
+        if (entry === null) break;
+        entries.push(entry);
+      }
+    } finally {
+      await directory.close();
+    }
+    return entries.sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
   }
+}
+
+async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
+  const channels = await readSupervisorDirectoryEntries(
+    SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+    MAX_SUPERVISOR_CHANNEL_ENTRIES_PER_REFRESH,
+  );
   const requests: SupervisorRequestRecord[] = [];
-  for (const channel of channels.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (requests.length >= MAX_SUPERVISOR_ARTIFACTS) break;
+  let channelsInspected = 0;
+  let filesInspected = 0;
+  for (const channel of channels) {
+    if (
+      requests.length >= MAX_SUPERVISOR_ARTIFACTS ||
+      channelsInspected >= MAX_SUPERVISOR_CHANNELS_PER_REFRESH ||
+      filesInspected >= MAX_SUPERVISOR_FILES_PER_REFRESH
+    )
+      break;
     if (!channel.isDirectory() || channel.isSymbolicLink()) continue;
+    channelsInspected += 1;
     const channelDir = join(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, channel.name);
     if (!withinSupervisorRoot(channelDir)) continue;
-    let files: import("node:fs").Dirent[];
-    try {
-      files = await readdir(join(channelDir, "requests"), { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (requests.length >= MAX_SUPERVISOR_ARTIFACTS) break;
+    const files = await readSupervisorDirectoryEntries(
+      join(channelDir, "requests"),
+      MAX_SUPERVISOR_FILES_PER_CHANNEL,
+    );
+    for (const file of files) {
+      if (
+        requests.length >= MAX_SUPERVISOR_ARTIFACTS ||
+        filesInspected >= MAX_SUPERVISOR_FILES_PER_REFRESH
+      )
+        break;
+      filesInspected += 1;
       if (!file.isFile() || file.isSymbolicLink() || !file.name.endsWith(".json")) continue;
       const parsed = await readBoundedJson<SupervisorRequestFile>(
         join(channelDir, "requests", file.name),
