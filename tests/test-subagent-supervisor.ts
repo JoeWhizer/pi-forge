@@ -27,13 +27,23 @@ async function main(): Promise<void> {
   )) as {
     SUBAGENTS_SUPERVISOR_CHANNEL_DIR: string;
     MAX_SUPERVISOR_FILES_PER_REFRESH: number;
-    listExternalSupervisorRequests: () => Promise<{ requestId: string }[]>;
+    listExternalSupervisorRequests: () => Promise<
+      {
+        requestId: string;
+        parentSessionId: string;
+        runId: string;
+        agent: string;
+        childIndex: number;
+        decision: string;
+        status: string;
+        replyMessage?: string;
+      }[]
+    >;
     replyExternalSupervisorRequest: (
       requestId: string,
       message: string,
       decision: "approved" | "rejected" | "no-decision",
     ) => Promise<{ accepted: boolean; decision?: string }>;
-    replayForgeSupervisorRepliesForSession: (sessionId: string) => Promise<void>;
   };
   const projects = (await import(resolve(repoRoot, "packages/server/dist/project-manager.js"))) as {
     createProject: (name: string, path: string) => Promise<{ id: string }>;
@@ -44,7 +54,13 @@ async function main(): Promise<void> {
     createSession: (
       projectId: string,
       workspacePath: string,
-    ) => Promise<{ sessionId: string; session: { messages: readonly unknown[] } }>;
+    ) => Promise<{
+      sessionId: string;
+      session: {
+        messages: readonly unknown[];
+        sessionManager: { appendMessage: (message: unknown) => void };
+      };
+    }>;
     disposeSession: (sessionId: string) => Promise<void>;
     resumeSession: (
       sessionId: string,
@@ -114,6 +130,30 @@ async function main(): Promise<void> {
 
     const project = await projects.createProject("supervisor-replay", fixtureDir);
     const parent = await registry.createSession(project.id, fixtureDir);
+    // Empty sessions intentionally have no JSONL. Persist a minimal fixture so
+    // resumeSession exercises the real cold-parent registry path without an LLM.
+    parent.session.sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "supervisor replay fixture", id: "fixture" }],
+      api: "messages",
+      provider: "anthropic",
+      model: "test-fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+    // Make the parent genuinely cold before the browser action. The resume
+    // path, not a direct helper call, must restore the durable reply card.
+    await registry.disposeSession(parent.sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+
     const replayId = randomUUID();
     const replayRunId = `supervisor-replay-${randomUUID()}`;
     const replayChannel = join(
@@ -129,7 +169,7 @@ async function main(): Promise<void> {
         createdAt: Date.now(),
         expiresAt: Date.now() + 60_000,
         reason: "need_decision",
-        message: "Should this browser approval survive reload?",
+        message: "Should this browser approval survive cold resume?",
         expectsReply: true,
         orchestratorSessionId: parent.sessionId,
         runId: replayRunId,
@@ -144,77 +184,90 @@ async function main(): Promise<void> {
       browserReply,
       "approved",
     );
-    const hasBrowserCard = (
-      messages: readonly unknown[],
-      requestId: string,
-      message: string,
-      decision: "approved" | "rejected",
-    ): boolean =>
+    await rm(join(replayChannel, "requests", `${replayId}.json`));
+    const fleetAfterNativeCleanup = await external.listExternalSupervisorRequests();
+
+    // A reused native id in another immutable tuple must not inherit the
+    // old browser classification or reply text.
+    const reusedRunId = `supervisor-reused-${randomUUID()}`;
+    const reusedChannel = join(
+      external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+      `${reusedRunId}-other-worker-1`,
+    );
+    await mkdir(join(reusedChannel, "requests"), { recursive: true });
+    await writeFile(
+      join(reusedChannel, "requests", `${replayId}.json`),
+      JSON.stringify({
+        type: "subagent.supervisor.request",
+        id: replayId,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        reason: "need_decision",
+        message: "A new request reused the native id.",
+        expectsReply: true,
+        orchestratorSessionId: parent.sessionId,
+        runId: reusedRunId,
+        agent: "other-worker",
+        childIndex: 1,
+      }),
+      "utf8",
+    );
+    const fleetWithCollision = await external.listExternalSupervisorRequests();
+    const oldFleetRequest = fleetWithCollision.find(
+      (request) => request.runId === replayRunId && request.requestId === replayId,
+    );
+    const reusedFleetRequest = fleetWithCollision.find(
+      (request) => request.runId === reusedRunId && request.requestId === replayId,
+    );
+    assert(
+      "reused supervisor request ids do not inherit a different tuple's browser decision",
+      oldFleetRequest?.decision === "approved" &&
+        oldFleetRequest.replyMessage === browserReply &&
+        reusedFleetRequest?.decision === "no-decision" &&
+        reusedFleetRequest.replyMessage === undefined,
+      JSON.stringify(fleetWithCollision),
+    );
+
+    const hasBrowserCard = (messages: readonly unknown[]): boolean =>
       messages.some((candidate) => {
         const value = candidate as {
           role?: unknown;
           customType?: unknown;
           content?: unknown;
-          details?: { decision?: unknown; requestId?: unknown; source?: unknown };
+          details?: Record<string, unknown>;
         };
         return (
           value.role === "custom" &&
           value.customType === "subagent_supervisor_reply" &&
-          value.content === message &&
+          value.content === browserReply &&
           value.details?.source === "pi-forge" &&
-          value.details.decision === decision &&
-          value.details.requestId === requestId
+          value.details.decision === "approved" &&
+          value.details.requestId === replayId &&
+          value.details.parentSessionId === parent.sessionId &&
+          value.details.runId === replayRunId &&
+          value.details.agent === "worker" &&
+          value.details.childIndex === 0
         );
       });
+    const resumed = await registry.resumeSession(parent.sessionId, project.id, fixtureDir);
     assert(
-      "browser approval emits an exact classified direct Chat event",
+      "cold parent resume restores the native-cleaned browser approval as an authoritative Chat and Fleet result",
       accepted.accepted &&
         accepted.decision === "approved" &&
-        hasBrowserCard(parent.session.messages, replayId, browserReply, "approved"),
-      JSON.stringify(parent.session.messages),
-    );
-    const rejectId = randomUUID();
-    const rejectReply = "Reject this exact browser decision.";
-    await writeFile(
-      join(replayChannel, "requests", `${rejectId}.json`),
-      JSON.stringify({
-        type: "subagent.supervisor.request",
-        id: rejectId,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + 60_000,
-        reason: "need_decision",
-        message: "Should this browser rejection survive reload?",
-        expectsReply: true,
-        orchestratorSessionId: parent.sessionId,
-        runId: replayRunId,
-        agent: "worker",
-        childIndex: 0,
-      }),
-      "utf8",
-    );
-    const rejected = await external.replyExternalSupervisorRequest(
-      rejectId,
-      rejectReply,
-      "rejected",
-    );
-    assert(
-      "browser rejection emits an exact classified direct Chat event",
-      rejected.accepted &&
-        rejected.decision === "rejected" &&
-        hasBrowserCard(parent.session.messages, rejectId, rejectReply, "rejected"),
-      JSON.stringify(parent.session.messages),
-    );
-    await rm(join(replayChannel, "requests", `${replayId}.json`));
-    await external.listExternalSupervisorRequests();
-    const liveMessages = parent.session.messages as unknown[];
-    liveMessages.splice(0, liveMessages.length);
-    await external.replayForgeSupervisorRepliesForSession(parent.sessionId);
-    assert(
-      "browser approval survives native cleanup and replay as one exact classified Chat event",
-      hasBrowserCard(parent.session.messages, replayId, browserReply, "approved"),
-      JSON.stringify(parent.session.messages),
+        fleetAfterNativeCleanup.some(
+          (request) =>
+            request.runId === replayRunId &&
+            request.requestId === replayId &&
+            request.status === "answered" &&
+            request.decision === "approved" &&
+            request.replyMessage === browserReply,
+        ) &&
+        hasBrowserCard(resumed.session.messages),
+      JSON.stringify({ fleetAfterNativeCleanup, messages: resumed.session.messages }),
     );
     await registry.disposeSession(parent.sessionId);
+    await rm(replayChannel, { recursive: true, force: true });
+    await rm(reusedChannel, { recursive: true, force: true });
   } finally {
     await Promise.all([
       rm(validChannel, { recursive: true, force: true }),

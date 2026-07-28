@@ -469,31 +469,81 @@ async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
   return requests.filter((request) => counts.get(request.requestId) === 1);
 }
 
+function isCanonicalSupervisorString(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string" && safeSupervisorString(value, maxBytes) === value;
+}
+
 function isPersistedSupervisorRequest(request: unknown): request is ExternalSupervisorRequest {
   if (!request || typeof request !== "object") return false;
   const value = request as Partial<ExternalSupervisorRequest>;
   const legacyStatus = (request as { status?: unknown }).status;
+  const createdAt = finiteTimestamp(value.createdAt);
+  const expiresAt = finiteTimestamp(value.expiresAt);
   return (
     isSafeSupervisorId(value.requestId) &&
-    safeSupervisorString(value.parentSessionId, 256) !== undefined &&
-    safeSupervisorString(value.runId, 4096) !== undefined &&
-    safeSupervisorString(value.agent, 256) !== undefined &&
+    isCanonicalSupervisorString(value.parentSessionId, 256) &&
+    isCanonicalSupervisorString(value.runId, 4096) &&
+    isCanonicalSupervisorString(value.agent, 256) &&
     typeof value.childIndex === "number" &&
     Number.isInteger(value.childIndex) &&
     value.childIndex >= 0 &&
     (value.reason === "need_decision" || value.reason === "interview_request") &&
     value.expectsReply === true &&
-    finiteTimestamp(value.createdAt) !== undefined &&
-    finiteTimestamp(value.expiresAt) !== undefined &&
-    safeSupervisorString(value.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES) !== undefined &&
+    createdAt !== undefined &&
+    expiresAt !== undefined &&
+    expiresAt >= createdAt &&
+    isCanonicalSupervisorString(value.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES) &&
     (value.replyMessage === undefined ||
-      safeSupervisorString(value.replyMessage, MAX_SUPERVISOR_REPLY_BYTES) !== undefined) &&
+      isCanonicalSupervisorString(value.replyMessage, MAX_SUPERVISOR_REPLY_BYTES)) &&
     (value.replySource === undefined || value.replySource === "forge-browser") &&
     (legacyStatus === "open" ||
       legacyStatus === "answered" ||
       legacyStatus === "cancelled" ||
       legacyStatus === "expired")
   );
+}
+
+/**
+ * The native request id is not globally unique across independent runs. Every
+ * durable lookup therefore uses the immutable, validated native correlation
+ * tuple rather than requestId alone.
+ */
+function supervisorRequestCorrelationKey(
+  request: Pick<
+    ExternalSupervisorRequest,
+    "requestId" | "parentSessionId" | "runId" | "agent" | "childIndex"
+  >,
+): string | undefined {
+  if (
+    !isSafeSupervisorId(request.requestId) ||
+    !isCanonicalSupervisorString(request.parentSessionId, 256) ||
+    !isCanonicalSupervisorString(request.runId, 4096) ||
+    !isCanonicalSupervisorString(request.agent, 256) ||
+    !Number.isInteger(request.childIndex) ||
+    request.childIndex < 0
+  ) {
+    return undefined;
+  }
+  return JSON.stringify([
+    request.requestId,
+    request.parentSessionId,
+    request.runId,
+    request.agent,
+    request.childIndex,
+  ]);
+}
+
+/** Return a prior record only when its exact immutable tuple is unambiguous. */
+function persistedSupervisorRequestFor(
+  requests: readonly ExternalSupervisorRequest[],
+  request: ExternalSupervisorRequest,
+): ExternalSupervisorRequest | undefined {
+  const key = supervisorRequestCorrelationKey(request);
+  if (key === undefined) return undefined;
+  const matches = requests.filter(
+    (candidate) => supervisorRequestCorrelationKey(candidate) === key,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function persistedSupervisorDecision(value: unknown): ExternalSupervisorDecision {
@@ -601,12 +651,22 @@ function publicSupervisorRequest(
 
 const SUPERVISOR_REPLY_CUSTOM_TYPE = "subagent_supervisor_reply";
 
-function hasForgeSupervisorReplyMessage(messages: readonly unknown[], requestId: string): boolean {
+function hasForgeSupervisorReplyMessage(
+  messages: readonly unknown[],
+  request: ExternalSupervisorRequest,
+): boolean {
   return messages.some((message) => {
     const value = message as { role?: unknown; customType?: unknown; details?: unknown };
     if (value.role !== "custom" || value.customType !== SUPERVISOR_REPLY_CUSTOM_TYPE) return false;
     if (typeof value.details !== "object" || value.details === null) return false;
-    return (value.details as Record<string, unknown>).requestId === requestId;
+    const details = value.details as Record<string, unknown>;
+    return (
+      details.requestId === request.requestId &&
+      details.parentSessionId === request.parentSessionId &&
+      details.runId === request.runId &&
+      details.agent === request.agent &&
+      details.childIndex === request.childIndex
+    );
   });
 }
 
@@ -618,11 +678,7 @@ function hasForgeSupervisorReplyMessage(messages: readonly unknown[], requestId:
 async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): Promise<void> {
   if (request.replySource !== "forge-browser" || request.replyMessage === undefined) return;
   const live = getSession(request.parentSessionId);
-  if (
-    live === undefined ||
-    hasForgeSupervisorReplyMessage(live.session.messages, request.requestId)
-  )
-    return;
+  if (live === undefined || hasForgeSupervisorReplyMessage(live.session.messages, request)) return;
   try {
     await live.session.sendCustomMessage(
       {
@@ -633,8 +689,10 @@ async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): 
           source: "pi-forge",
           kind: "supervisor-reply",
           requestId: request.requestId,
+          parentSessionId: request.parentSessionId,
           runId: request.runId,
           agent: request.agent,
+          childIndex: request.childIndex,
           decision: persistedSupervisorDecision(request.decision),
           repliedAt: request.repliedAt,
         },
@@ -650,7 +708,14 @@ async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): 
 export async function replayForgeSupervisorRepliesForSession(sessionId: string): Promise<void> {
   const history = await readSupervisorHistory();
   for (const request of history) {
-    if (request.parentSessionId !== sessionId || request.status !== "answered") continue;
+    // A duplicate persisted tuple is corrupt/ambiguous. Do not guess which
+    // classification belongs in the parent transcript.
+    if (
+      request.parentSessionId !== sessionId ||
+      request.status !== "answered" ||
+      persistedSupervisorRequestFor(history, request) === undefined
+    )
+      continue;
     await deliverForgeSupervisorReply(request);
   }
 }
@@ -688,18 +753,26 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
   return supervisorRequestLock(async () => {
     const now = Date.now();
     const history = await readSupervisorHistory();
-    const byId = new Map(history.map((request) => [request.requestId, request]));
     const live = await readSupervisorRequests();
-    const liveIds = new Set(live.map((request) => request.requestId));
+    const liveCorrelationKeys = new Set(
+      live.flatMap((request) => {
+        const key = supervisorRequestCorrelationKey(request);
+        return key === undefined ? [] : [key];
+      }),
+    );
+    let projected = [...history];
     for (const request of live) {
+      const key = supervisorRequestCorrelationKey(request);
+      if (key === undefined) continue;
       const reply = await readSupervisorReply(replyFileFor(request), request.requestId);
-      const prior = byId.get(request.requestId);
+      // Do not let a reused request id inherit a decision or reply from a
+      // different parent/run/agent/child tuple. Duplicate exact tuples are
+      // likewise treated as ambiguous and receive no persisted state.
+      const prior = persistedSupervisorRequestFor(projected, request);
       const status = supervisorStatus(request, reply, now);
       const replyCreatedAt = reply === undefined ? undefined : finiteTimestamp(reply.createdAt);
-      byId.set(request.requestId, {
+      const next: ExternalSupervisorRequest = {
         ...publicSupervisorRequest(request),
-        // A native/terminal reply has no decision classification. Preserve only
-        // a decision that Forge persisted when it wrote the reply itself.
         decision: prior === undefined ? "no-decision" : persistedSupervisorDecision(prior.decision),
         status,
         ...(replyCreatedAt !== undefined
@@ -720,31 +793,43 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
                   ...(prior.replySource === undefined ? {} : { replySource: prior.replySource }),
                 }
             : { replyMessage: reply.message }),
-      });
+      };
+      // Replace only the exact immutable tuple. Removing multiple matches
+      // clears corrupt ambiguity instead of selecting an arbitrary record.
+      projected = [
+        ...projected.filter((candidate) => supervisorRequestCorrelationKey(candidate) !== key),
+        next,
+      ];
     }
     // The native client deletes a request as soon as it receives a terminal
     // reply. Re-check prior open records by their deterministic channel path
     // before discarding them so terminal replies remain visible as answered.
-    for (const prior of byId.values()) {
-      if (liveIds.has(prior.requestId) || prior.status !== "open") continue;
-      const reply = await readSupervisorReply(replyFileFor(prior), prior.requestId);
-      if (reply !== undefined) {
-        const repliedAt = finiteTimestamp(reply.createdAt);
-        byId.set(prior.requestId, {
-          ...prior,
-          status: "answered",
-          ...(repliedAt === undefined ? {} : { repliedAt }),
-          ...(prior.replySource === "forge-browser" || prior.replyMessage !== undefined
-            ? {}
-            : { replyMessage: reply.message }),
-        });
-      } else if (prior.expiresAt !== undefined && now > prior.expiresAt) {
-        byId.set(prior.requestId, { ...prior, status: "expired" });
-      }
-    }
-    const projected = [...byId.values()].filter(
-      (request) => request.status !== "open" || liveIds.has(request.requestId),
+    projected = await Promise.all(
+      projected.map(async (prior) => {
+        const key = supervisorRequestCorrelationKey(prior);
+        if (key === undefined || liveCorrelationKeys.has(key) || prior.status !== "open")
+          return prior;
+        const reply = await readSupervisorReply(replyFileFor(prior), prior.requestId);
+        if (reply !== undefined) {
+          const repliedAt = finiteTimestamp(reply.createdAt);
+          return {
+            ...prior,
+            status: "answered" as const,
+            ...(repliedAt === undefined ? {} : { repliedAt }),
+            ...(prior.replySource === "forge-browser" || prior.replyMessage !== undefined
+              ? {}
+              : { replyMessage: reply.message }),
+          };
+        }
+        return prior.expiresAt !== undefined && now > prior.expiresAt
+          ? { ...prior, status: "expired" as const }
+          : prior;
+      }),
     );
+    projected = projected.filter((request) => {
+      const key = supervisorRequestCorrelationKey(request);
+      return request.status !== "open" || (key !== undefined && liveCorrelationKeys.has(key));
+    });
     sortSupervisorHistory(projected);
     await writeSupervisorHistory(projected);
     return projected.map(publicSupervisorRequest);
@@ -754,7 +839,11 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
 /** Reconcile a persisted request after pi-subagents has deleted its native request file. */
 async function reconcileDeletedSupervisorRequest(requestId: string): Promise<boolean> {
   const history = await readSupervisorHistory();
-  const prior = history.find((request) => request.requestId === requestId);
+  // Without a live artifact we only have requestId. Never choose between
+  // persisted rows that reused it for different immutable tuples.
+  const matches = history.filter((request) => request.requestId === requestId);
+  if (matches.length !== 1) return false;
+  const prior = matches[0];
   if (prior === undefined) return false;
   const reply = await readSupervisorReply(replyFileFor(prior), requestId);
   if (prior.status !== "answered" && reply === undefined) return false;
@@ -776,7 +865,11 @@ async function reconcileDeletedSupervisorRequest(requestId: string): Promise<boo
     };
     await writeSupervisorHistory(
       sortSupervisorHistory(
-        history.map((request) => (request.requestId === requestId ? reconciled : request)),
+        history.map((request) =>
+          supervisorRequestCorrelationKey(request) === supervisorRequestCorrelationKey(prior)
+            ? reconciled
+            : request,
+        ),
       ),
     );
   }
@@ -834,6 +927,25 @@ export async function replyExternalSupervisorRequest(
         message: "Only need_decision requests can be approved or rejected.",
       };
     }
+    const correlationKey = supervisorRequestCorrelationKey(request);
+    if (correlationKey === undefined) {
+      return {
+        accepted: false,
+        code: "request_not_open",
+        message: "The supervisor request correlation is invalid.",
+      };
+    }
+    const history = await readSupervisorHistory();
+    if (
+      history.filter((record) => supervisorRequestCorrelationKey(record) === correlationKey)
+        .length > 1
+    ) {
+      return {
+        accepted: false,
+        code: "request_not_open",
+        message: "The supervisor request history is ambiguous.",
+      };
+    }
     const replyPath = replyFileFor(request);
     if ((await readSupervisorReply(replyPath, requestId)) !== undefined) {
       return {
@@ -887,7 +999,6 @@ export async function replyExternalSupervisorRequest(
     } finally {
       await unlink(temporary).catch(() => undefined);
     }
-    const history = await readSupervisorHistory();
     const projected: ExternalSupervisorRequest = {
       ...publicSupervisorRequest(request),
       decision,
@@ -896,7 +1007,10 @@ export async function replyExternalSupervisorRequest(
       replyMessage: normalized,
       replySource: "forge-browser",
     };
-    const retained = history.filter((record) => record.requestId !== requestId);
+    // Retain history for reused request ids in other immutable tuples.
+    const retained = history.filter(
+      (record) => supervisorRequestCorrelationKey(record) !== correlationKey,
+    );
     // Keep newest-first before the fixed-cap writer so a just-accepted reply
     // cannot be evicted when history is already full.
     retained.unshift(projected);
