@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
+  createSubagentFleetNavigationGuard,
   formatSubagentDuration,
   groupSubagentFleetRuns,
   truncateSubagentFleetRunId,
@@ -49,8 +50,10 @@ async function main(): Promise<void> {
   const activeRoot = `fleet-active-${randomUUID()}`;
   const failedRoot = `fleet-failed-${randomUUID()}`;
   const malformedRoot = `fleet-malformed-${randomUUID()}`;
-  const activeRunId = `stable-run-${randomUUID()}`;
-  const failedRunId = `stable-run-${randomUUID()}`;
+  // These collide in the 500-character prefix formerly used by the server.
+  const longRunIdPrefix = `stable-run-${"r".repeat(500)}`;
+  const activeRunId = `${longRunIdPrefix}-active`;
+  const failedRunId = `${longRunIdPrefix}-failed`;
   const parentSessionId = randomUUID();
   const activeChildSessionId = randomUUID();
   const failedChildSessionId = randomUUID();
@@ -151,9 +154,14 @@ async function main(): Promise<void> {
     const active = allRuns.find((run) => run.runId === activeRunId);
     const failed = allRuns.find((run) => run.runId === failedRunId);
     assert(
-      "fleet discovers active run with stable parent and run ids",
-      active?.parentSessionId === parentSessionId && active.state === "running",
-      JSON.stringify(active),
+      "fleet preserves full stable run identities beyond 500 characters",
+      active?.parentSessionId === parentSessionId &&
+        active.state === "running" &&
+        active.runId === activeRunId &&
+        failed?.runId === failedRunId &&
+        active.runId !== failed.runId &&
+        new Set(allRuns.map((run) => run.runId)).size === allRuns.length,
+      JSON.stringify(allRuns.map((run) => run.runId)),
     );
     assert(
       "fleet exposes child session, model, and stable run-scoped child id",
@@ -199,6 +207,21 @@ async function main(): Promise<void> {
       "fleet run ids are safely truncated for narrow cards",
       truncateSubagentFleetRunId(oversizedRunId) === `${"r".repeat(79)}…` &&
         truncateSubagentFleetRunId("short-run") === "short-run",
+    );
+
+    const navigationGuard = createSubagentFleetNavigationGuard();
+    const staleNavigation = navigationGuard.start();
+    const concurrentNavigation = navigationGuard.start();
+    navigationGuard.invalidate();
+    const reopenedNavigationGuard = createSubagentFleetNavigationGuard();
+    const reopenedNavigation = reopenedNavigationGuard.start();
+    assert(
+      "closing the fleet invalidates in-flight child navigation before a later reopen",
+      staleNavigation !== undefined &&
+        concurrentNavigation === undefined &&
+        !navigationGuard.isCurrent(staleNavigation) &&
+        reopenedNavigation !== undefined &&
+        reopenedNavigationGuard.isCurrent(reopenedNavigation),
     );
 
     await Promise.all([

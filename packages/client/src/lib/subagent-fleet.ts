@@ -6,6 +6,38 @@ export interface SubagentFleetGroup {
   runs: SubagentFleetRun[];
 }
 
+export interface SubagentFleetNavigationGuard {
+  start: () => number | undefined;
+  isCurrent: (token: number) => boolean;
+  finish: (token: number) => void;
+  invalidate: () => void;
+}
+
+/**
+ * Invalidates async child-session navigation when its fleet view closes.
+ * A token prevents a completion from an unmounted view affecting a later reopen.
+ */
+export function createSubagentFleetNavigationGuard(): SubagentFleetNavigationGuard {
+  let generation = 0;
+  let inFlight = false;
+  return {
+    start: () => {
+      if (inFlight) return undefined;
+      inFlight = true;
+      generation += 1;
+      return generation;
+    },
+    isCurrent: (token) => inFlight && token === generation,
+    finish: (token) => {
+      if (token === generation) inFlight = false;
+    },
+    invalidate: () => {
+      generation += 1;
+      inFlight = false;
+    },
+  };
+}
+
 /** Group runs by the explicit parent id without inferring identity from labels or timestamps. */
 export function groupSubagentFleetRuns(runs: readonly SubagentFleetRun[]): SubagentFleetGroup[] {
   const groups = new Map<string | undefined, SubagentFleetRun[]>();

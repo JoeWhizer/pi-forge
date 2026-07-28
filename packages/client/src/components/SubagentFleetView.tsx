@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { api, type SubagentFleetChild, type SubagentFleetState } from "../lib/api-client";
 import {
+  createSubagentFleetNavigationGuard,
   formatSubagentDuration,
   groupSubagentFleetRuns,
   isActiveSubagentFleetState,
@@ -38,12 +39,15 @@ export function SubagentFleetView({ onClose }: Props) {
   const setActiveProject = useProjectStore((state) => state.setActive);
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
-  const openingSessionRef = useRef(false);
+  const navigationGuardRef = useRef(createSubagentFleetNavigationGuard());
+  const navigationGuard = navigationGuardRef.current;
 
   useEffect(() => {
     startPolling();
     return stopPolling;
   }, [startPolling, stopPolling]);
+
+  useEffect(() => () => navigationGuard.invalidate(), [navigationGuard]);
 
   const groups = useMemo(() => groupSubagentFleetRuns(runs), [runs]);
   const sessionsById = useMemo(
@@ -57,11 +61,16 @@ export function SubagentFleetView({ onClose }: Props) {
   );
   const activeCount = runs.filter((run) => isActiveSubagentFleetState(run.state)).length;
 
+  const closeFleet = (): void => {
+    navigationGuard.invalidate();
+    onClose();
+  };
+
   const openChildSession = async (sessionId: string): Promise<void> => {
-    // State updates are not synchronous, so use a ref to reject rapid clicks
-    // before the disabled state reaches every child-session button.
-    if (openingSessionRef.current) return;
-    openingSessionRef.current = true;
+    // State updates are not synchronous, so reject rapid clicks before the
+    // disabled state reaches every child-session button.
+    const token = navigationGuard.start();
+    if (token === undefined) return;
     setOpeningSessionId(sessionId);
     setOpenError(undefined);
     try {
@@ -69,20 +78,26 @@ export function SubagentFleetView({ onClose }: Props) {
       // resuming them. ChatView then opens the normal (or read-only external)
       // session stream after selection, matching sidebar navigation.
       const summary = await api.getSession(sessionId);
-      setActiveProject(summary.projectId);
+      if (!navigationGuard.isCurrent(token)) return;
       await loadSessionsForProject(summary.projectId);
+      if (!navigationGuard.isCurrent(token)) return;
+      setActiveProject(summary.projectId);
       setActiveSession(sessionId);
-      onClose();
+      closeFleet();
     } catch (err) {
-      setOpenError(err instanceof Error ? err.message : "session_open_failed");
+      if (navigationGuard.isCurrent(token)) {
+        setOpenError(err instanceof Error ? err.message : "session_open_failed");
+      }
     } finally {
-      openingSessionRef.current = false;
-      setOpeningSessionId(undefined);
+      if (navigationGuard.isCurrent(token)) {
+        navigationGuard.finish(token);
+        setOpeningSessionId(undefined);
+      }
     }
   };
 
   return (
-    <Modal open onClose={onClose} title="Subagent fleet" width="max-w-6xl">
+    <Modal open onClose={closeFleet} title="Subagent fleet" width="max-w-6xl">
       <div className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden">
         <header className="flex items-center gap-2 border-b border-neutral-800 px-4 py-2 text-xs text-neutral-400 light:border-neutral-200 light:text-neutral-600">
           <span>{activeCount} active</span>

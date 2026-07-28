@@ -231,6 +231,12 @@ function nonEmptyString(value: unknown, maxLength = 2000): string | undefined {
   return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 1)}…`;
 }
 
+/** Preserve identity verbatim; display consumers are responsible for truncation. */
+function stableRunId(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  return value;
+}
+
 function durationFrom(
   durationMs: unknown,
   startedAt: number | undefined,
@@ -333,7 +339,7 @@ async function readFleetRun(root: string): Promise<ExternalSubagentFleetRun | un
 
   const status = await readJson<AsyncStatusFile>(statusPath);
   if (!isExternalState(status?.state)) return undefined;
-  const runId = nonEmptyString(status.runId, 500) ?? root;
+  const runId = stableRunId(status.runId) ?? root;
   const parentSessionId = await sessionIdFromSessionReference(status.sessionId);
   const result = await readJson<AsyncResultFile>(resultPath);
   const statusSteps = Array.isArray(status.steps) ? status.steps : [];
