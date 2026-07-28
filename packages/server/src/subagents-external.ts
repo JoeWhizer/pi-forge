@@ -644,6 +644,29 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
   });
 }
 
+/** Reconcile a persisted request after pi-subagents has deleted its native request file. */
+async function reconcileDeletedSupervisorRequest(requestId: string): Promise<boolean> {
+  const history = await readSupervisorHistory();
+  const prior = history.find((request) => request.requestId === requestId);
+  if (prior === undefined) return false;
+  const reply = await readSupervisorReply(replyFileFor(prior), requestId);
+  if (prior.status !== "answered" && reply === undefined) return false;
+  const repliedAt = reply === undefined ? prior.repliedAt : finiteTimestamp(reply.createdAt);
+  if (prior.status !== "answered" || repliedAt !== prior.repliedAt) {
+    const reconciled = {
+      ...prior,
+      status: "answered" as const,
+      ...(repliedAt === undefined ? {} : { repliedAt }),
+    };
+    await writeSupervisorHistory(
+      sortSupervisorHistory(
+        history.map((request) => (request.requestId === requestId ? reconciled : request)),
+      ),
+    );
+  }
+  return true;
+}
+
 /**
  * Atomically reply to one exact native request. `link()` prevents concurrent
  * Forge writers from replacing each other. pi-subagents 0.37 terminal replies
@@ -675,6 +698,13 @@ export async function replyExternalSupervisorRequest(
       (candidate) => candidate.requestId === requestId && candidate.expectsReply,
     );
     if (request === undefined) {
+      if (await reconcileDeletedSupervisorRequest(requestId)) {
+        return {
+          accepted: false,
+          code: "request_already_answered",
+          message: "This supervisor request already has a reply.",
+        };
+      }
       return {
         accepted: false,
         code: "request_not_found",

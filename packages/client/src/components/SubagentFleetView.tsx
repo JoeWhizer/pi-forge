@@ -87,6 +87,9 @@ export function SubagentFleetView({ onClose }: Props) {
   const [declineConfirmationRequestId, setDeclineConfirmationRequestId] = useState<
     string | undefined
   >();
+  const [declineConfirmationMessage, setDeclineConfirmationMessage] = useState<
+    string | undefined
+  >();
   const stopConfirmationRunIdRef = useRef<string | undefined>(undefined);
   stopConfirmationRunIdRef.current = stopConfirmationRunId;
   const declineConfirmationRequest = supervisorRequests.find(
@@ -191,6 +194,7 @@ export function SubagentFleetView({ onClose }: Props) {
     if (declineConfirmationRequest !== undefined) {
       declineConfirmationDismissalRef.current = "cancel";
       setDeclineConfirmationRequestId(undefined);
+      setDeclineConfirmationMessage(undefined);
       return;
     }
     closeFleet();
@@ -198,10 +202,12 @@ export function SubagentFleetView({ onClose }: Props) {
 
   const confirmDecline = (): void => {
     const request = declineConfirmationRequest;
+    const message = declineConfirmationMessage;
     declineConfirmationDismissalRef.current = "confirm";
     setDeclineConfirmationRequestId(undefined);
+    setDeclineConfirmationMessage(undefined);
     if (request === undefined) return;
-    void api.rejectSubagentSupervisorRequest(request.requestId).then(
+    void api.rejectSubagentSupervisorRequest(request.requestId, message).then(
       () => load(true),
       (err: unknown) => {
         const message =
@@ -279,7 +285,9 @@ export function SubagentFleetView({ onClose }: Props) {
         <div role="alert" className="flex flex-col gap-3 px-4 py-3">
           <p className="text-xs text-neutral-300">
             Rejecting sends a classified final native reply to {declineConfirmationRequest.agent}
-            for this exact request. pi-subagents does not confirm agent consumption.
+            for this exact request
+            {declineConfirmationMessage === undefined ? "." : " with your note."} pi-subagents does
+            not confirm agent consumption.
           </p>
           <footer className="flex justify-end gap-2 pt-1">
             <button
@@ -288,6 +296,7 @@ export function SubagentFleetView({ onClose }: Props) {
               onClick={() => {
                 declineConfirmationDismissalRef.current = "cancel";
                 setDeclineConfirmationRequestId(undefined);
+                setDeclineConfirmationMessage(undefined);
               }}
               className="rounded-md border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
             >
@@ -378,8 +387,9 @@ export function SubagentFleetView({ onClose }: Props) {
             onToggleExpanded={toggleSupervisorRequestExpanded}
             onToggleSection={toggleSupervisorRequestsExpanded}
             onSubmitted={() => load(true)}
-            onDecline={(requestId, trigger) => {
+            onDecline={(requestId, message, trigger) => {
               declineConfirmationTriggerRef.current = trigger;
+              setDeclineConfirmationMessage(message);
               setDeclineConfirmationRequestId(requestId);
             }}
           />
@@ -794,7 +804,7 @@ function SupervisorRequests({
   onToggleExpanded: (requestId: string) => void;
   onToggleSection: () => void;
   onSubmitted: () => Promise<void>;
-  onDecline: (requestId: string, trigger: HTMLButtonElement) => void;
+  onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
 }) {
   if (requests.length === 0) return null;
   const openCount = requests.filter((request) => request.status === "open").length;
@@ -802,55 +812,56 @@ function SupervisorRequests({
     (request) => request.status === "open" && request.reason === "need_decision",
   ).length;
   const contentId = "supervisor-requests-content";
+  const headingId = "supervisor-requests-heading";
   return (
-    <section className="mb-4 overflow-hidden rounded-lg border-2 border-amber-700/80 bg-neutral-950 shadow-sm light:border-amber-500 light:bg-amber-50/40">
+    <section
+      aria-labelledby={headingId}
+      className="mb-4 overflow-hidden rounded-lg border-2 border-amber-700/80 bg-neutral-950 shadow-sm light:border-amber-500 light:bg-amber-50/40"
+    >
       <header className="border-b border-amber-800/80 bg-amber-950/50 light:border-amber-300 light:bg-amber-100/70">
-        <button
-          type="button"
-          onClick={onToggleSection}
-          aria-expanded={expanded}
-          aria-controls={contentId}
-          aria-label={expanded ? "Collapse supervisor requests" : "Expand supervisor requests"}
-          className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 text-left hover:bg-amber-900/30 light:hover:bg-amber-100"
-        >
-          {expanded ? (
-            <ChevronDown size={16} aria-hidden />
-          ) : (
-            <ChevronRight size={16} aria-hidden />
-          )}
-          <h2 className="text-sm font-semibold text-amber-100 light:text-amber-950">
-            Supervisor requests
-          </h2>
-          {openCount > 0 && (
-            <span className="text-[11px] font-medium text-amber-200 light:text-amber-900">
-              {decisionCount > 0
-                ? `${decisionCount} needs a decision`
-                : `${openCount} pending request${openCount === 1 ? "" : "s"}`}
-            </span>
-          )}
-        </button>
+        <h2 id={headingId} className="text-sm font-semibold">
+          <button
+            type="button"
+            onClick={onToggleSection}
+            aria-expanded={expanded}
+            aria-controls={contentId}
+            className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 text-left text-amber-100 hover:bg-amber-900/30 light:text-amber-950 light:hover:bg-amber-100"
+          >
+            {expanded ? (
+              <ChevronDown size={16} aria-hidden />
+            ) : (
+              <ChevronRight size={16} aria-hidden />
+            )}
+            <span>Supervisor requests</span>
+            {openCount > 0 && (
+              <span className="text-[11px] font-medium text-amber-200 light:text-amber-900">
+                {decisionCount > 0
+                  ? `${decisionCount} needs a decision`
+                  : `${openCount} pending request${openCount === 1 ? "" : "s"}`}
+              </span>
+            )}
+          </button>
+        </h2>
       </header>
-      {expanded && (
-        <div id={contentId} className="px-3 pb-3">
-          <p className="mt-2 text-[11px] text-neutral-300 light:text-neutral-700">
-            Transport and decision are separate: replies are written to the native channel, but only
-            Forge Approve or Reject records a decision. pi-subagents does not report whether an
-            agent consumed or acted on a reply.
-          </p>
-          <ul className="mt-3 space-y-2">
-            {requests.map((request) => (
-              <SupervisorRequestRow
-                key={request.requestId}
-                request={request}
-                expanded={expandedRequests[request.requestId] ?? false}
-                onToggleExpanded={onToggleExpanded}
-                onSubmitted={onSubmitted}
-                onDecline={onDecline}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
+      <div id={contentId} hidden={!expanded} className="px-3 pb-3">
+        <p className="mt-2 text-[11px] text-neutral-300 light:text-neutral-700">
+          Transport and decision are separate: replies are written to the native channel, but only
+          Forge Approve or Reject records a decision. pi-subagents does not report whether an agent
+          consumed or acted on a reply.
+        </p>
+        <ul className="mt-3 space-y-2">
+          {requests.map((request) => (
+            <SupervisorRequestRow
+              key={request.requestId}
+              request={request}
+              expanded={expandedRequests[request.requestId] ?? false}
+              onToggleExpanded={onToggleExpanded}
+              onSubmitted={onSubmitted}
+              onDecline={onDecline}
+            />
+          ))}
+        </ul>
+      </div>
     </section>
   );
 }
@@ -868,7 +879,7 @@ function SupervisorRequestRow({
   expanded: boolean;
   onToggleExpanded: (requestId: string) => void;
   onSubmitted: () => Promise<void>;
-  onDecline: (requestId: string, trigger: HTMLButtonElement) => void;
+  onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
 }) {
   const [answer, setAnswer] = useState("");
   const [sending, setSending] = useState(false);
@@ -892,8 +903,8 @@ function SupervisorRequestRow({
     const normalized = answer.trim();
     if (!canReply || sending) return;
     if (
-      kind === "reply" &&
-      (!normalized || new TextEncoder().encode(normalized).byteLength > MAX_SUPERVISOR_REPLY_BYTES)
+      (kind === "reply" && !normalized) ||
+      new TextEncoder().encode(normalized).byteLength > MAX_SUPERVISOR_REPLY_BYTES
     ) {
       setError("A supervisor reply must contain non-whitespace text of at most 64 KiB.");
       return;
@@ -902,7 +913,7 @@ function SupervisorRequestRow({
     setError(undefined);
     try {
       if (kind === "approve") {
-        await api.approveSubagentSupervisorRequest(request.requestId);
+        await api.approveSubagentSupervisorRequest(request.requestId, normalized || undefined);
         setSubmissionDecision("approved");
       } else {
         await api.replySubagentSupervisorRequest(request.requestId, normalized);
@@ -974,7 +985,7 @@ function SupervisorRequestRow({
               {interview}
             </pre>
           )}
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 font-mono text-[10px] text-neutral-500">
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 font-mono text-[10px] text-neutral-300 light:text-neutral-600">
             <dt>parentSessionId</dt>
             <dd className="break-all">{request.parentSessionId}</dd>
             <dt>runId</dt>
@@ -985,7 +996,9 @@ function SupervisorRequestRow({
           {canReply && (
             <div className="mt-3">
               <label htmlFor={`supervisor-reply-${request.requestId}`} className="sr-only">
-                Reply to supervisor request {request.requestId}
+                {request.reason === "need_decision"
+                  ? `Optional decision note for supervisor request ${request.requestId}`
+                  : `Reply to supervisor request ${request.requestId}`}
               </label>
               <textarea
                 id={`supervisor-reply-${request.requestId}`}
@@ -993,7 +1006,11 @@ function SupervisorRequestRow({
                 onChange={(event) => setAnswer(event.target.value)}
                 rows={3}
                 maxLength={MAX_SUPERVISOR_REPLY_BYTES}
-                placeholder="Reply to this exact supervisor request (records no decision)"
+                placeholder={
+                  request.reason === "need_decision"
+                    ? "Optional decision note sent with Approve or Reject"
+                    : "Reply to this exact supervisor request"
+                }
                 className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 light:border-neutral-300 light:bg-white light:text-neutral-900"
               />
               <div className="mt-2 flex flex-wrap justify-end gap-2">
@@ -1009,7 +1026,19 @@ function SupervisorRequestRow({
                     </button>
                     <button
                       type="button"
-                      onClick={(event) => onDecline(request.requestId, event.currentTarget)}
+                      onClick={(event) => {
+                        const normalized = answer.trim();
+                        if (
+                          new TextEncoder().encode(normalized).byteLength >
+                          MAX_SUPERVISOR_REPLY_BYTES
+                        ) {
+                          setError(
+                            "A supervisor reply must contain non-whitespace text of at most 64 KiB.",
+                          );
+                          return;
+                        }
+                        onDecline(request.requestId, normalized || undefined, event.currentTarget);
+                      }}
                       disabled={sending}
                       className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-200 hover:bg-red-950/60 disabled:opacity-50 light:border-red-300 light:text-red-800"
                     >

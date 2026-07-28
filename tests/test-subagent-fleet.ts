@@ -73,8 +73,11 @@ async function main(): Promise<void> {
     "utf8",
   );
   assert(
-    "Supervisor requests frame is initially expanded and persists accessible user choice",
-    fleetViewSource.includes("aria-controls={contentId}") &&
+    "Supervisor requests frame has an accessible heading/button and an always-rendered controlled region",
+    fleetViewSource.includes("aria-labelledby={headingId}") &&
+      fleetViewSource.includes("<h2 id={headingId}") &&
+      fleetViewSource.includes("aria-controls={contentId}") &&
+      fleetViewSource.includes("id={contentId} hidden={!expanded}") &&
       fleetViewSource.includes("aria-expanded={expanded}") &&
       fleetViewSource.includes("expanded={supervisorRequestsExpanded}") &&
       fleetViewSource.includes("onToggleSection={toggleSupervisorRequestsExpanded}") &&
@@ -94,12 +97,18 @@ async function main(): Promise<void> {
       fleetViewSource.includes("Rejected") &&
       fleetViewSource.includes('setSubmissionDecision("no-decision")') &&
       fleetViewSource.includes('setSubmissionDecision("approved")') &&
+      fleetViewSource.includes("Optional decision note sent with Approve or Reject") &&
+      fleetViewSource.includes(
+        "approveSubagentSupervisorRequest(request.requestId, normalized || undefined)",
+      ) &&
+      fleetViewSource.includes("rejectSubagentSupervisorRequest(request.requestId, message)") &&
       fleetViewSource.includes("Answered — reply observed"),
   );
   assert(
     "Supervisor request hierarchy has non-color-only structure and truthful delivery limits",
     fleetViewSource.includes("border-2 border-amber-700/80") &&
       fleetViewSource.includes("border-l-4 border-neutral-600") &&
+      fleetViewSource.includes("text-neutral-300 light:text-neutral-600") &&
       fleetViewSource.includes("Expired") &&
       fleetViewSource.includes("Reply error") &&
       fleetViewSource.includes("pi-subagents does not") &&

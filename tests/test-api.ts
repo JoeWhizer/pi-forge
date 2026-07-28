@@ -549,6 +549,8 @@ async function main(): Promise<void> {
         JSON.stringify(terminalRecovered.body),
       );
 
+      const decisionNote = "Proceed with the native supervisor channel.";
+      const rejectNote = "Do not proceed until the API contract is documented.";
       const interviewDecision = await jsend("POST", `${listUrl}/${interviewId}/approve`, {}, auth);
       assert(
         "native supervisor decisions reject interview requests instead of misclassifying them",
@@ -556,11 +558,24 @@ async function main(): Promise<void> {
           (interviewDecision.body as { error?: string }).error === "request_not_decision",
         JSON.stringify(interviewDecision.body),
       );
-      const approved = await jsend("POST", `${listUrl}/${approveId}/approve`, {}, auth);
+      const approved = await jsend(
+        "POST",
+        `${listUrl}/${approveId}/approve`,
+        { message: decisionNote },
+        auth,
+      );
       const approvedReply = JSON.parse(
         await readFile(join(supervisorFixturePath, "replies", `${approveId}.json`), "utf8"),
       ) as { message?: string; decision?: string };
-      const rejected = await jsend("POST", `${listUrl}/${rejectId}/reject`, {}, auth);
+      const rejected = await jsend(
+        "POST",
+        `${listUrl}/${rejectId}/reject`,
+        { message: rejectNote },
+        auth,
+      );
+      const rejectedReply = JSON.parse(
+        await readFile(join(supervisorFixturePath, "replies", `${rejectId}.json`), "utf8"),
+      ) as { message?: string; decision?: string };
       await writeFile(
         join(supervisorFixturePath, "replies", `${approveId}.json`),
         JSON.stringify({
@@ -572,13 +587,14 @@ async function main(): Promise<void> {
         "utf8",
       );
       await rm(join(requestsDir, `${approveId}.json`));
+      const repeatedApproved = await jsend("POST", `${listUrl}/${approveId}/approve`, {}, auth);
       const decidedList = await jget(listUrl, auth);
       assert(
         "native supervisor Approve sends a classified reply and persists it through terminal reconciliation",
         approved.status === 202 &&
           (approved.body as { status?: string; decision?: string }).status === "answered" &&
           (approved.body as { decision?: string }).decision === "approved" &&
-          approvedReply.message === "Approved by supervisor." &&
+          approvedReply.message === decisionNote &&
           approvedReply.decision === "approved" &&
           (
             decidedList.body as {
@@ -593,10 +609,18 @@ async function main(): Promise<void> {
         JSON.stringify({ approved: approved.body, reply: approvedReply, list: decidedList.body }),
       );
       assert(
+        "repeated decision after native request cleanup reports an actionable already-answered conflict",
+        repeatedApproved.status === 409 &&
+          (repeatedApproved.body as { error?: string }).error === "request_already_answered",
+        JSON.stringify(repeatedApproved.body),
+      );
+      assert(
         "native supervisor Reject records a rejected decision with answered transport state",
         rejected.status === 202 &&
           (rejected.body as { status?: string; decision?: string }).status === "answered" &&
           (rejected.body as { decision?: string }).decision === "rejected" &&
+          rejectedReply.message === rejectNote &&
+          rejectedReply.decision === "rejected" &&
           (
             decidedList.body as {
               requests?: { requestId?: string; status?: string; decision?: string }[];
@@ -607,7 +631,7 @@ async function main(): Promise<void> {
               item.status === "answered" &&
               item.decision === "rejected",
           ) === true,
-        JSON.stringify({ rejected: rejected.body, list: decidedList.body }),
+        JSON.stringify({ rejected: rejected.body, reply: rejectedReply, list: decidedList.body }),
       );
       const expired = await jget(listUrl, auth);
       assert(
