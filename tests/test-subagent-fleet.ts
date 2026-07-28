@@ -6,10 +6,8 @@ import { randomUUID } from "node:crypto";
 import {
   createSubagentFleetNavigationGuard,
   filterCleanedSubagentFleetRuns,
-  filterCleanedSubagentSupervisorRequests,
   formatSubagentDuration,
   groupSubagentFleetRuns,
-  isCleanableSubagentSupervisorRequest,
   isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
@@ -17,10 +15,7 @@ import {
   toggleSubagentFleetExpanded,
   truncateSubagentFleetRunId,
 } from "../packages/client/src/lib/subagent-fleet";
-import type {
-  SubagentFleetRun,
-  SubagentSupervisorRequest,
-} from "../packages/client/src/lib/api-client/types";
+import type { SubagentFleetRun } from "../packages/client/src/lib/api-client/types";
 import {
   supervisorDecisionFromForgeReplyEvent,
   supervisorDecisionFromSupervisorToolResult,
@@ -59,103 +54,17 @@ async function main(): Promise<void> {
     resolve(repoRoot, "packages/client/src/components/SubagentFleetView.tsx"),
     "utf8",
   );
-  assert(
-    "Fleet renders browser-native supervisor requests with exact correlation and explicit decisions",
-    fleetViewSource.includes("SupervisorRequests") &&
-      fleetViewSource.includes("parentSessionId") &&
-      fleetViewSource.includes("requestId") &&
-      fleetViewSource.includes("replySubagentSupervisorRequest") &&
-      fleetViewSource.includes("approveSubagentSupervisorRequest") &&
-      fleetViewSource.includes("rejectSubagentSupervisorRequest") &&
-      fleetViewSource.includes("Rejecting sends a classified final native reply") &&
-      !fleetViewSource.includes("pause supervisor"),
-  );
-  assert(
-    "Supervisor reply UI validates byte limits and restores accessible reject focus",
-    fleetViewSource.includes("MAX_SUPERVISOR_REPLY_BYTES") &&
-      fleetViewSource.includes("new TextEncoder().encode(normalized).byteLength") &&
-      fleetViewSource.includes("declineConfirmationCancelRef.current?.focus()") &&
-      fleetViewSource.includes("declineConfirmationTriggerRef") &&
-      fleetViewSource.includes("Reply to supervisor request") &&
-      fleetViewSource.includes('aria-live="polite"'),
-  );
   const fleetStoreSource = await readFile(
     resolve(repoRoot, "packages/client/src/store/subagent-fleet-store.ts"),
     "utf8",
   );
-  const decisionModelSource = await readFile(
-    resolve(repoRoot, "packages/client/src/lib/subagent-supervisor-decision.ts"),
-    "utf8",
-  );
-  const chatViewSource = await readFile(
-    resolve(repoRoot, "packages/client/src/components/ChatView.tsx"),
-    "utf8",
-  );
   assert(
-    "Supervisor requests frame has an accessible heading/button and an always-rendered controlled region",
-    fleetViewSource.includes("aria-labelledby={headingId}") &&
-      fleetViewSource.includes("<h2 id={headingId}") &&
-      fleetViewSource.includes("aria-controls={contentId}") &&
-      fleetViewSource.includes("id={contentId} hidden={!expanded}") &&
-      fleetViewSource.includes("aria-expanded={expanded}") &&
-      fleetViewSource.includes("expanded={supervisorRequestsExpanded}") &&
-      fleetViewSource.includes("onToggleSection={toggleSupervisorRequestsExpanded}") &&
-      fleetViewSource.includes("expanded={expandedRequests[request.requestId] ?? false}") &&
-      fleetStoreSource.includes("SUPERVISOR_REQUESTS_EXPANDED_KEY") &&
-      fleetStoreSource.includes(
-        'localStorage.getItem(SUPERVISOR_REQUESTS_EXPANDED_KEY) !== "false"',
-      ) &&
-      fleetStoreSource.includes("toggleSupervisorRequestsExpanded"),
-  );
-  assert(
-    "Transport and decision state are separate; free-text never implies approval",
-    fleetViewSource.includes('state: "reply-sent"') &&
-      fleetViewSource.includes('label: "Reply sent"') &&
-      decisionModelSource.includes("No decision recorded") &&
-      decisionModelSource.includes("Approved") &&
-      decisionModelSource.includes("Rejected") &&
-      fleetViewSource.includes("supervisorDecisionPresentation") &&
-      fleetViewSource.includes("setSubmissionDecision(result.decision)") &&
-      fleetViewSource.includes("onReplySent(request.requestId, result.decision)") &&
-      fleetViewSource.includes("Optional decision note sent with Approve or Reject") &&
-      fleetViewSource.includes(
-        "approveSubagentSupervisorRequest(request.requestId, normalized || undefined)",
-      ) &&
-      fleetViewSource.includes("rejectSubagentSupervisorRequest(request.requestId, message)") &&
-      fleetViewSource.includes("Answered — reply observed"),
-  );
-  assert(
-    "Portal supervisor, Fleet lifecycle, and control status labels are English",
-    [
-      "Approved",
-      "Rejected",
-      "No decision recorded",
-      "Reply sent",
-      "Needs response",
-      "Pending interview",
-      "Answered — reply observed",
-      "Expired",
-      "Queued for control channel",
-      "Scheduled",
-      "Sent to child control inbox",
-      "Pi accepted input",
-      "Delivery failed",
-      "Recovered by pi-subagents",
-    ].every((label) => decisionModelSource.includes(label) || fleetViewSource.includes(label)) &&
-      !/\b(Genehmigt|Abgelehnt|Verworfen|Ausstehend|Wartend|Gesendet|Fehlgeschlagen)\b/.test(
-        `${decisionModelSource}\n${fleetViewSource}`,
-      ),
-  );
-  assert(
-    "Supervisor request hierarchy has non-color-only structure and truthful delivery limits",
-    fleetViewSource.includes("border-2 border-amber-700/80") &&
-      fleetViewSource.includes("border-l-4 border-neutral-600") &&
-      fleetViewSource.includes("text-neutral-300 light:text-neutral-600") &&
-      fleetViewSource.includes("Expired") &&
-      fleetViewSource.includes("Reply error") &&
-      fleetViewSource.includes("pi-subagents does not") &&
-      fleetViewSource.includes("consumed or acted on a reply") &&
-      fleetViewSource.includes("needs a decision"),
+    "Fleet omits supervisor request presentation and keeps Clean scoped to terminal runs",
+    !fleetViewSource.includes("SupervisorRequests") &&
+      !fleetViewSource.includes("supervisor request") &&
+      !fleetStoreSource.includes("listSubagentSupervisorRequests") &&
+      !fleetStoreSource.includes("hiddenSupervisorRequestIds") &&
+      fleetViewSource.includes("Clean only hides terminal runs"),
   );
   const supervisorRouteSource = await readFile(
     resolve(repoRoot, "packages/server/src/routes/subagent-fleet.ts"),
@@ -181,14 +90,17 @@ async function main(): Promise<void> {
       supervisorExternalSource.includes("sortSupervisorHistory") &&
       supervisorExternalSource.includes("Re-check prior open records"),
   );
+  const chatViewSource = await readFile(
+    resolve(repoRoot, "packages/client/src/components/ChatView.tsx"),
+    "utf8",
+  );
   assert(
-    "Fleet validates and renders persisted decision classifications without text inference",
+    "Supervisor APIs and Chat native reply cards remain available outside Fleet",
     apiClientSource.includes("function vSubagentSupervisorDecision") &&
       apiClientSource.includes("decision: vSubagentSupervisorDecision(raw.decision, status)") &&
-      fleetViewSource.includes("SupervisorRequestDecisionStatus") &&
-      fleetViewSource.includes("request.decision") &&
-      fleetStoreSource.includes("markSupervisorReplySent") &&
-      fleetStoreSource.includes("sentSupervisorReplyIds"),
+      chatViewSource.includes('message.customType === "subagent_supervisor_reply"') &&
+      chatViewSource.includes("nativeSupervisorReplyChatPresentation") &&
+      chatViewSource.includes("Native supervisor reply"),
   );
 
   assert(
@@ -581,75 +493,6 @@ async function main(): Promise<void> {
         formatSubagentDuration(undefined, 1_000, 3_000) === "2s",
     );
     const oversizedRunId = "r".repeat(160);
-    const supervisorRequests: [
-      SubagentSupervisorRequest,
-      SubagentSupervisorRequest,
-      SubagentSupervisorRequest,
-      SubagentSupervisorRequest,
-    ] = [
-      {
-        requestId: "pending",
-        parentSessionId,
-        runId: activeRunId,
-        agent: "worker",
-        childIndex: 0,
-        reason: "need_decision",
-        expectsReply: true,
-        createdAt: 1,
-        message: "Still waiting",
-        decision: "no-decision",
-        status: "open",
-      },
-      {
-        requestId: "approved",
-        parentSessionId,
-        runId: activeRunId,
-        agent: "worker",
-        childIndex: 0,
-        reason: "need_decision",
-        expectsReply: true,
-        createdAt: 2,
-        message: "Approved explicitly",
-        decision: "approved",
-        status: "answered",
-      },
-      {
-        requestId: "terminal",
-        parentSessionId,
-        runId: activeRunId,
-        agent: "worker",
-        childIndex: 0,
-        reason: "need_decision",
-        expectsReply: true,
-        createdAt: 3,
-        message: "Terminal free text",
-        decision: "no-decision",
-        status: "answered",
-      },
-      {
-        requestId: "expired",
-        parentSessionId,
-        runId: activeRunId,
-        agent: "worker",
-        childIndex: 0,
-        reason: "interview_request",
-        expectsReply: true,
-        createdAt: 4,
-        message: "Expired request",
-        decision: "no-decision",
-        status: "expired",
-      },
-    ];
-    const [
-      pendingSupervisorRequest,
-      approvedSupervisorRequest,
-      terminalSupervisorRequest,
-      expiredSupervisorRequest,
-    ] = supervisorRequests;
-    const cleanedSupervisorRequests = filterCleanedSubagentSupervisorRequests(
-      supervisorRequests,
-      new Set(["approved", "terminal", "expired"]),
-    );
     assert(
       "Clean filters only selected Fleet rows and both hierarchy levels start collapsed",
       filterCleanedSubagentFleetRuns(allRuns, new Set([failedRunId, processFailedRunId])).every(
@@ -661,23 +504,6 @@ async function main(): Promise<void> {
         !shouldExpandSubagentFleetRun(failed!) &&
         isStoppableSubagentFleetRun(active!) &&
         !isStoppableSubagentFleetRun(failed!),
-    );
-    assert(
-      "Clean hides only completed supervisor requests and Reset can restore their local rows",
-      !isCleanableSubagentSupervisorRequest(pendingSupervisorRequest) &&
-        !isCleanableSubagentSupervisorRequest(pendingSupervisorRequest, false) &&
-        isCleanableSubagentSupervisorRequest(pendingSupervisorRequest, true) &&
-        isCleanableSubagentSupervisorRequest(approvedSupervisorRequest) &&
-        isCleanableSubagentSupervisorRequest(terminalSupervisorRequest) &&
-        isCleanableSubagentSupervisorRequest(expiredSupervisorRequest) &&
-        cleanedSupervisorRequests.map((request) => request.requestId).join(",") === "pending" &&
-        filterCleanedSubagentSupervisorRequests(supervisorRequests, new Set()).length ===
-          supervisorRequests.length &&
-        fleetStoreSource.includes("hiddenSupervisorRequestIds") &&
-        fleetStoreSource.includes(
-          "resetCleanedRuns: () => set({ hiddenRunIds: [], hiddenSupervisorRequestIds: [] })",
-        ),
-      JSON.stringify(cleanedSupervisorRequests),
     );
     const parentKey = `parent:${parentSessionId}`;
     const expandedParent = toggleSubagentFleetExpanded({}, parentKey, false);

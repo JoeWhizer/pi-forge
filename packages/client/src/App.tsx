@@ -4,6 +4,7 @@ import {
   FolderTree,
   Menu,
   MessageSquare,
+  Network,
   PanelLeft,
   Terminal as TerminalIcon,
 } from "lucide-react";
@@ -13,6 +14,8 @@ import { useActiveProject, useProjectStore } from "./store/project-store";
 import { useSessionStore } from "./store/session-store";
 import { useFileStore } from "./store/file-store";
 import { useUiConfigStore } from "./store/ui-config-store";
+import { api } from "./lib/api-client";
+import { hasSubagentFleetExtension } from "./lib/subagent-fleet-availability";
 import { useQuickActionsStore } from "./store/quick-actions-store";
 import { LoginScreen } from "./components/LoginScreen";
 import { ChangePasswordScreen } from "./components/ChangePasswordScreen";
@@ -115,7 +118,27 @@ export function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const subagentFleetOpen = useUiStore((s) => s.subagentFleetOpen);
+  const openSubagentFleet = useUiStore((s) => s.openSubagentFleet);
   const closeSubagentFleet = useUiStore((s) => s.closeSubagentFleet);
+  const [subagentFleetAvailable, setSubagentFleetAvailable] = useState(false);
+  useEffect(() => {
+    if (activeSessionId === undefined) {
+      setSubagentFleetAvailable(false);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .listExtensionCommands(activeSessionId)
+      .then(({ commands }) => {
+        if (!cancelled) setSubagentFleetAvailable(hasSubagentFleetExtension(commands));
+      })
+      .catch(() => {
+        if (!cancelled) setSubagentFleetAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId]);
   // Files pane visibility persists across reloads — opening it once is
   // a strong signal the user wants it. localStorage > a session-scoped
   // boolean so a refresh doesn't snap back to "hidden".
@@ -572,6 +595,17 @@ export function App() {
               they just can't reconfigure them from a locked-down
               deploy (the Settings → MCP tab is hidden separately). */}
           <McpStatusBadge />
+          {subagentFleetAvailable && (
+            <button
+              type="button"
+              onClick={openSubagentFleet}
+              aria-label="Open subagent fleet"
+              title="Open subagent fleet"
+              className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-md border border-neutral-700 text-neutral-300 hover:border-neutral-500"
+            >
+              <Network size={15} aria-hidden />
+            </button>
+          )}
           <button
             onClick={() => setSettingsOpen(true)}
             className="rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-500"

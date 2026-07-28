@@ -21,27 +21,20 @@ import {
   type SubagentFleetState,
   type SubagentFleetSteeringRequest,
   type SubagentFleetSteeringState,
-  type SubagentSupervisorRequest,
 } from "../lib/api-client";
 import {
   createSubagentFleetNavigationGuard,
   filterCleanedSubagentFleetRuns,
-  filterCleanedSubagentSupervisorRequests,
   formatSubagentDuration,
   groupSubagentFleetRuns,
   isActiveSubagentFleetState,
   isCleanableSubagentFleetState,
-  isCleanableSubagentSupervisorRequest,
   isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
   shouldExpandSubagentFleetRuns,
   truncateSubagentFleetRunId,
 } from "../lib/subagent-fleet";
-import {
-  supervisorDecisionFromValue,
-  supervisorDecisionPresentation,
-} from "../lib/subagent-supervisor-decision";
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
 import { useSubagentFleetStore } from "../store/subagent-fleet-store";
@@ -53,21 +46,10 @@ interface Props {
 
 export function SubagentFleetView({ onClose }: Props) {
   const runs = useSubagentFleetStore((state) => state.runs);
-  const supervisorRequests = useSubagentFleetStore((state) => state.supervisorRequests);
   const hiddenRunIds = useSubagentFleetStore((state) => state.hiddenRunIds);
-  const hiddenSupervisorRequestIds = useSubagentFleetStore(
-    (state) => state.hiddenSupervisorRequestIds,
-  );
-  const sentSupervisorReplyIds = useSubagentFleetStore((state) => state.sentSupervisorReplyIds);
   const stoppingRunIds = useSubagentFleetStore((state) => state.stoppingRunIds);
   const expandedParents = useSubagentFleetStore((state) => state.expandedParents);
   const expandedRuns = useSubagentFleetStore((state) => state.expandedRuns);
-  const expandedSupervisorRequests = useSubagentFleetStore(
-    (state) => state.expandedSupervisorRequests,
-  );
-  const supervisorRequestsExpanded = useSubagentFleetStore(
-    (state) => state.supervisorRequestsExpanded,
-  );
   const loading = useSubagentFleetStore((state) => state.loading);
   const refreshing = useSubagentFleetStore((state) => state.refreshing);
   const lastRefreshedAt = useSubagentFleetStore((state) => state.lastRefreshedAt);
@@ -75,16 +57,9 @@ export function SubagentFleetView({ onClose }: Props) {
   const load = useSubagentFleetStore((state) => state.load);
   const cleanTerminalRuns = useSubagentFleetStore((state) => state.cleanTerminalRuns);
   const resetCleanedRuns = useSubagentFleetStore((state) => state.resetCleanedRuns);
-  const markSupervisorReplySent = useSubagentFleetStore((state) => state.markSupervisorReplySent);
   const stopRun = useSubagentFleetStore((state) => state.stopRun);
   const toggleParentExpanded = useSubagentFleetStore((state) => state.toggleParentExpanded);
   const toggleRunExpanded = useSubagentFleetStore((state) => state.toggleRunExpanded);
-  const toggleSupervisorRequestExpanded = useSubagentFleetStore(
-    (state) => state.toggleSupervisorRequestExpanded,
-  );
-  const toggleSupervisorRequestsExpanded = useSubagentFleetStore(
-    (state) => state.toggleSupervisorRequestsExpanded,
-  );
   const startPolling = useSubagentFleetStore((state) => state.startPolling);
   const stopPolling = useSubagentFleetStore((state) => state.stopPolling);
   const projects = useProjectStore((state) => state.projects);
@@ -95,24 +70,12 @@ export function SubagentFleetView({ onClose }: Props) {
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
   const [stopConfirmationRunId, setStopConfirmationRunId] = useState<string | undefined>();
-  const [declineConfirmationRequestId, setDeclineConfirmationRequestId] = useState<
-    string | undefined
-  >();
-  const [declineConfirmationMessage, setDeclineConfirmationMessage] = useState<
-    string | undefined
-  >();
   const stopConfirmationRunIdRef = useRef<string | undefined>(undefined);
   stopConfirmationRunIdRef.current = stopConfirmationRunId;
-  const declineConfirmationRequest = supervisorRequests.find(
-    (request) => request.requestId === declineConfirmationRequestId,
-  );
   const stopConfirmationCancelRef = useRef<HTMLButtonElement>(null);
   const stopConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
-  const declineConfirmationCancelRef = useRef<HTMLButtonElement>(null);
-  const declineConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
   const fleetContentRef = useRef<HTMLDivElement>(null);
   const stopConfirmationDismissalRef = useRef<"cancel" | "confirm" | undefined>(undefined);
-  const declineConfirmationDismissalRef = useRef<"cancel" | "confirm" | undefined>(undefined);
   const navigationGuardRef = useRef(createSubagentFleetNavigationGuard());
   const navigationGuard = navigationGuardRef.current;
 
@@ -128,19 +91,10 @@ export function SubagentFleetView({ onClose }: Props) {
       stopConfirmationCancelRef.current?.focus();
       return;
     }
-    if (declineConfirmationRequest !== undefined) {
-      declineConfirmationCancelRef.current?.focus();
-      return;
-    }
-    const dismissal =
-      stopConfirmationDismissalRef.current ?? declineConfirmationDismissalRef.current;
+    const dismissal = stopConfirmationDismissalRef.current;
     if (dismissal === undefined) return;
-    const trigger =
-      stopConfirmationDismissalRef.current !== undefined
-        ? stopConfirmationTriggerRef.current
-        : declineConfirmationTriggerRef.current;
+    const trigger = stopConfirmationTriggerRef.current;
     stopConfirmationDismissalRef.current = undefined;
-    declineConfirmationDismissalRef.current = undefined;
     if (
       dismissal === "cancel" &&
       trigger !== null &&
@@ -151,7 +105,7 @@ export function SubagentFleetView({ onClose }: Props) {
     } else {
       fleetContentRef.current?.focus();
     }
-  }, [stopConfirmationRunId, declineConfirmationRequest]);
+  }, [stopConfirmationRunId]);
 
   // Lifecycle artifacts can precede a child JSONL. Refresh session discovery
   // alongside fleet polling, then only enable navigation for discovered rows.
@@ -163,14 +117,6 @@ export function SubagentFleetView({ onClose }: Props) {
   const visibleRuns = useMemo(
     () => filterCleanedSubagentFleetRuns(runs, new Set(hiddenRunIds)),
     [hiddenRunIds, runs],
-  );
-  const visibleSupervisorRequests = useMemo(
-    () =>
-      filterCleanedSubagentSupervisorRequests(
-        supervisorRequests,
-        new Set(hiddenSupervisorRequestIds),
-      ),
-    [hiddenSupervisorRequestIds, supervisorRequests],
   );
   const groups = useMemo(() => groupSubagentFleetRuns(visibleRuns), [visibleRuns]);
   const sessionsById = useMemo(
@@ -210,33 +156,7 @@ export function SubagentFleetView({ onClose }: Props) {
       cancelStopConfirmation();
       return;
     }
-    if (declineConfirmationRequest !== undefined) {
-      declineConfirmationDismissalRef.current = "cancel";
-      setDeclineConfirmationRequestId(undefined);
-      setDeclineConfirmationMessage(undefined);
-      return;
-    }
     closeFleet();
-  };
-
-  const confirmDecline = (): void => {
-    const request = declineConfirmationRequest;
-    const message = declineConfirmationMessage;
-    declineConfirmationDismissalRef.current = "confirm";
-    setDeclineConfirmationRequestId(undefined);
-    setDeclineConfirmationMessage(undefined);
-    if (request === undefined) return;
-    void api.rejectSubagentSupervisorRequest(request.requestId, message).then(
-      (result) => {
-        markSupervisorReplySent(request.requestId, result.decision);
-        return load(true);
-      },
-      (err: unknown) => {
-        const message =
-          err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message;
-        useSubagentFleetStore.setState({ error: message });
-      },
-    );
   };
 
   const openChildSession = (sessionId: string, projectId: string): void => {
@@ -268,13 +188,7 @@ export function SubagentFleetView({ onClose }: Props) {
       key="fleet"
       open
       onClose={handleModalClose}
-      title={
-        stopConfirmationRunId !== undefined
-          ? "Stop subagent"
-          : declineConfirmationRequest !== undefined
-            ? "Reject supervisor request"
-            : "Subagent fleet"
-      }
+      title={stopConfirmationRunId !== undefined ? "Stop subagent" : "Subagent fleet"}
       width="max-w-6xl"
     >
       {stopConfirmationRunId !== undefined && (
@@ -303,40 +217,9 @@ export function SubagentFleetView({ onClose }: Props) {
           </footer>
         </div>
       )}
-      {declineConfirmationRequest !== undefined && (
-        <div role="alert" className="flex flex-col gap-3 px-4 py-3">
-          <p className="text-xs text-neutral-300">
-            Rejecting sends a classified final native reply to {declineConfirmationRequest.agent}
-            for this exact request
-            {declineConfirmationMessage === undefined ? "." : " with your note."} pi-subagents does
-            not confirm agent consumption.
-          </p>
-          <footer className="flex justify-end gap-2 pt-1">
-            <button
-              type="button"
-              ref={declineConfirmationCancelRef}
-              onClick={() => {
-                declineConfirmationDismissalRef.current = "cancel";
-                setDeclineConfirmationRequestId(undefined);
-                setDeclineConfirmationMessage(undefined);
-              }}
-              className="rounded-md border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
-            >
-              Keep open
-            </button>
-            <button
-              type="button"
-              onClick={confirmDecline}
-              className="rounded-md bg-red-700 px-3 py-1 text-xs font-medium text-red-50 hover:bg-red-600"
-            >
-              Reject request
-            </button>
-          </footer>
-        </div>
-      )}
       <div
         ref={fleetContentRef}
-        hidden={stopConfirmationRunId !== undefined || declineConfirmationRequest !== undefined}
+        hidden={stopConfirmationRunId !== undefined}
         tabIndex={-1}
         className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden"
       >
@@ -358,8 +241,8 @@ export function SubagentFleetView({ onClose }: Props) {
           <button
             type="button"
             onClick={() => resetCleanedRuns()}
-            disabled={hiddenRunIds.length === 0 && hiddenSupervisorRequestIds.length === 0}
-            title="Restore runs and supervisor requests hidden by Clean. This does not change server data."
+            disabled={hiddenRunIds.length === 0}
+            title="Restore runs hidden by Clean. This does not change server data."
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
             <RotateCcw size={12} />
@@ -372,16 +255,9 @@ export function SubagentFleetView({ onClose }: Props) {
               !runs.some(
                 (run) =>
                   isCleanableSubagentFleetState(run.state) && !hiddenRunIds.includes(run.runId),
-              ) &&
-              !supervisorRequests.some(
-                (request) =>
-                  isCleanableSubagentSupervisorRequest(
-                    request,
-                    sentSupervisorReplyIds.includes(request.requestId),
-                  ) && !hiddenSupervisorRequestIds.includes(request.requestId),
               )
             }
-            title="Hide terminal runs and completed supervisor requests from this Fleet view only. Sessions, artifacts, and server history are preserved."
+            title="Hide terminal runs from this Fleet view only. Sessions, artifacts, and server history are preserved."
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
             <Trash2 size={12} />
@@ -398,9 +274,8 @@ export function SubagentFleetView({ onClose }: Props) {
           </button>
         </header>
         <div className="border-b border-neutral-800 px-4 py-1.5 text-[10px] text-neutral-500 light:border-neutral-200">
-          Clean only hides terminal runs and completed supervisor requests in this Fleet view. Reset
-          restores them; neither action changes sessions, artifacts, server history, or server
-          state.
+          Clean only hides terminal runs in this Fleet view. Reset restores them; neither action
+          changes sessions, artifacts, server history, or server state.
         </div>
 
         {(error !== undefined || openError !== undefined) && (
@@ -410,21 +285,6 @@ export function SubagentFleetView({ onClose }: Props) {
         )}
 
         <div className="flex-1 overflow-y-auto p-4">
-          <SupervisorRequests
-            requests={visibleSupervisorRequests}
-            sentReplyRequestIds={new Set(sentSupervisorReplyIds)}
-            expanded={supervisorRequestsExpanded}
-            expandedRequests={expandedSupervisorRequests}
-            onToggleExpanded={toggleSupervisorRequestExpanded}
-            onToggleSection={toggleSupervisorRequestsExpanded}
-            onSubmitted={() => load(true)}
-            onReplySent={markSupervisorReplySent}
-            onDecline={(requestId, message, trigger) => {
-              declineConfirmationTriggerRef.current = trigger;
-              setDeclineConfirmationMessage(message);
-              setDeclineConfirmationRequestId(requestId);
-            }}
-          />
           {loading && visibleRuns.length === 0 ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-neutral-500">
               <Loader2 size={16} className="animate-spin" />
@@ -690,412 +550,6 @@ function SteeringRequest({ request }: { request: SubagentFleetSteeringRequest })
             .map((target) => target.reason)
             .filter((reason): reason is string => reason !== undefined)
             .join(" ")}
-        </div>
-      )}
-    </li>
-  );
-}
-
-type SupervisorRequestTransportState = "open" | "reply-sent" | "answered" | "expired" | "error";
-
-function supervisorRequestTransportStatus(
-  request: SubagentSupervisorRequest,
-  replySent: boolean,
-  hasError: boolean,
-): { state: SupervisorRequestTransportState; label: string; detail: string; className: string } {
-  if (hasError) {
-    return {
-      state: "error",
-      label: "Reply error",
-      detail: "The reply was not sent. Review the error and try again.",
-      className:
-        "border-red-800/70 bg-red-950/30 text-red-200 light:border-red-300 light:bg-red-50 light:text-red-800",
-    };
-  }
-  if (replySent) {
-    return {
-      state: "reply-sent",
-      label: "Reply sent",
-      detail:
-        "The reply was written to the pi-subagents native supervisor channel; agent consumption is not confirmed.",
-      className:
-        "border-neutral-700 bg-neutral-900 text-neutral-100 light:border-neutral-300 light:bg-white light:text-neutral-800",
-    };
-  }
-  return (
-    {
-      open: {
-        state: "open",
-        label: request.reason === "need_decision" ? "Needs response" : "Pending interview",
-        detail: "A reply is still needed for this native pi-subagents supervisor request.",
-        className:
-          "border-amber-800/70 bg-amber-950/30 text-amber-100 light:border-amber-300 light:bg-amber-50 light:text-amber-900",
-      },
-      answered: {
-        state: "answered",
-        label: "Answered — reply observed",
-        detail:
-          "A terminal or browser reply was observed in the pi-subagents channel; agent consumption is not confirmed.",
-        className:
-          "border-neutral-700 bg-neutral-900 text-neutral-100 light:border-neutral-300 light:bg-white light:text-neutral-800",
-      },
-      expired: {
-        state: "expired",
-        label: "Expired",
-        detail: "This request expired before a reply was accepted.",
-        className:
-          "border-amber-800/70 bg-amber-950/20 text-amber-100 light:border-amber-300 light:bg-amber-50 light:text-amber-900",
-      },
-    } as const
-  )[request.status];
-}
-
-function SupervisorRequestTransportStatus({
-  status,
-  sending,
-}: {
-  status: ReturnType<typeof supervisorRequestTransportStatus>;
-  sending: boolean;
-}) {
-  const Icon =
-    status.state === "open" || status.state === "expired"
-      ? Clock3
-      : status.state === "error"
-        ? XCircle
-        : CheckCircle2;
-  return (
-    <span
-      role="status"
-      title={status.detail}
-      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium ${status.className}`}
-    >
-      {sending ? (
-        <Loader2 size={11} className="animate-spin" aria-hidden />
-      ) : (
-        <Icon size={11} aria-hidden />
-      )}
-      {sending ? "Sending reply" : status.label}
-    </span>
-  );
-}
-
-function SupervisorRequestDecisionStatus({
-  decision,
-}: {
-  decision: "approved" | "rejected" | "no-decision";
-}) {
-  const presentation = supervisorDecisionPresentation(decision);
-  const classified = supervisorDecisionFromValue(decision);
-  const Icon =
-    classified === "approved" ? CheckCircle2 : classified === "rejected" ? XCircle : Clock3;
-  return (
-    <span
-      title="Decision classification is recorded only by Forge Approve or Reject actions."
-      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium ${presentation.className}`}
-    >
-      <Icon size={11} aria-hidden />
-      {presentation.label}
-    </span>
-  );
-}
-
-function supervisorRequestPreview(message: string): string {
-  const compact = message.replace(/\s+/g, " ").trim();
-  return compact.length > 140 ? `${compact.slice(0, 139)}…` : compact;
-}
-
-function SupervisorRequests({
-  requests,
-  sentReplyRequestIds,
-  expanded,
-  expandedRequests,
-  onToggleExpanded,
-  onToggleSection,
-  onSubmitted,
-  onReplySent,
-  onDecline,
-}: {
-  requests: SubagentSupervisorRequest[];
-  sentReplyRequestIds: ReadonlySet<string>;
-  expanded: boolean;
-  expandedRequests: Record<string, boolean>;
-  onToggleExpanded: (requestId: string) => void;
-  onToggleSection: () => void;
-  onSubmitted: () => Promise<void>;
-  onReplySent: (requestId: string, decision: SubagentSupervisorRequest["decision"]) => void;
-  onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
-}) {
-  if (requests.length === 0) return null;
-  const openCount = requests.filter((request) => request.status === "open").length;
-  const decisionCount = requests.filter(
-    (request) => request.status === "open" && request.reason === "need_decision",
-  ).length;
-  const contentId = "supervisor-requests-content";
-  const headingId = "supervisor-requests-heading";
-  return (
-    <section
-      aria-labelledby={headingId}
-      className="mb-4 overflow-hidden rounded-lg border-2 border-amber-700/80 bg-neutral-950 shadow-sm light:border-amber-500 light:bg-amber-50/40"
-    >
-      <header className="border-b border-amber-800/80 bg-amber-950/50 light:border-amber-300 light:bg-amber-100/70">
-        <h2 id={headingId} className="text-sm font-semibold">
-          <button
-            type="button"
-            onClick={onToggleSection}
-            aria-expanded={expanded}
-            aria-controls={contentId}
-            className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2.5 text-left text-amber-100 hover:bg-amber-900/30 light:text-amber-950 light:hover:bg-amber-100"
-          >
-            {expanded ? (
-              <ChevronDown size={16} aria-hidden />
-            ) : (
-              <ChevronRight size={16} aria-hidden />
-            )}
-            <span>Supervisor requests</span>
-            {openCount > 0 && (
-              <span className="text-[11px] font-medium text-amber-200 light:text-amber-900">
-                {decisionCount > 0
-                  ? `${decisionCount} needs a decision`
-                  : `${openCount} pending request${openCount === 1 ? "" : "s"}`}
-              </span>
-            )}
-          </button>
-        </h2>
-      </header>
-      <div id={contentId} hidden={!expanded} className="px-3 pb-3">
-        <p className="mt-2 text-[11px] text-neutral-300 light:text-neutral-700">
-          Transport and decision are separate: replies are written to the native channel, but only
-          Forge Approve or Reject records a decision. pi-subagents does not report whether an agent
-          consumed or acted on a reply.
-        </p>
-        <ul className="mt-3 space-y-2">
-          {requests.map((request) => (
-            <SupervisorRequestRow
-              key={request.requestId}
-              request={request}
-              expanded={expandedRequests[request.requestId] ?? false}
-              replySent={sentReplyRequestIds.has(request.requestId)}
-              onToggleExpanded={onToggleExpanded}
-              onSubmitted={onSubmitted}
-              onReplySent={onReplySent}
-              onDecline={onDecline}
-            />
-          ))}
-        </ul>
-      </div>
-    </section>
-  );
-}
-
-const MAX_SUPERVISOR_REPLY_BYTES = 64 * 1024;
-
-function SupervisorRequestRow({
-  request,
-  expanded,
-  replySent,
-  onToggleExpanded,
-  onSubmitted,
-  onReplySent,
-  onDecline,
-}: {
-  request: SubagentSupervisorRequest;
-  expanded: boolean;
-  replySent: boolean;
-  onToggleExpanded: (requestId: string) => void;
-  onSubmitted: () => Promise<void>;
-  onReplySent: (requestId: string, decision: SubagentSupervisorRequest["decision"]) => void;
-  onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
-}) {
-  const [answer, setAnswer] = useState("");
-  const [sending, setSending] = useState(false);
-  const [submissionDecision, setSubmissionDecision] = useState<
-    "approved" | "rejected" | "no-decision" | undefined
-  >();
-  const [error, setError] = useState<string | undefined>();
-  const canReply = request.status === "open" && request.expectsReply && !replySent;
-  const transport = supervisorRequestTransportStatus(
-    request,
-    replySent,
-    error !== undefined && request.status === "open",
-  );
-  const decision = submissionDecision ?? request.decision;
-  const detailsId = `supervisor-request-${request.requestId}`;
-  const submit = async (kind: "reply" | "approve"): Promise<void> => {
-    const normalized = answer.trim();
-    if (!canReply || sending) return;
-    if (
-      (kind === "reply" && !normalized) ||
-      new TextEncoder().encode(normalized).byteLength > MAX_SUPERVISOR_REPLY_BYTES
-    ) {
-      setError("A supervisor reply must contain non-whitespace text of at most 64 KiB.");
-      return;
-    }
-    setSending(true);
-    setError(undefined);
-    try {
-      const result =
-        kind === "approve"
-          ? await api.approveSubagentSupervisorRequest(request.requestId, normalized || undefined)
-          : await api.replySubagentSupervisorRequest(request.requestId, normalized);
-      setSubmissionDecision(result.decision);
-      onReplySent(request.requestId, result.decision);
-      setAnswer("");
-      await onSubmitted();
-    } catch (err) {
-      setError(err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message);
-    } finally {
-      setSending(false);
-    }
-  };
-  let interview: string | undefined;
-  if (request.interview !== undefined) {
-    try {
-      interview = JSON.stringify(request.interview, null, 2);
-    } catch {
-      interview = "(Structured interview context could not be rendered.)";
-    }
-  }
-  return (
-    <li className="overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-sm light:border-neutral-300 light:bg-white">
-      <button
-        type="button"
-        onClick={() => onToggleExpanded(request.requestId)}
-        aria-expanded={expanded}
-        aria-controls={detailsId}
-        aria-label={
-          expanded
-            ? `Collapse supervisor request from ${request.agent}`
-            : `Expand supervisor request from ${request.agent}`
-        }
-        className="block w-full border-l-4 border-neutral-600 px-2.5 py-2 text-left hover:bg-neutral-800 light:border-neutral-400 light:hover:bg-neutral-50"
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {expanded ? (
-            <ChevronDown size={14} aria-hidden />
-          ) : (
-            <ChevronRight size={14} aria-hidden />
-          )}
-          <SupervisorRequestTransportStatus status={transport} sending={sending} />
-          <SupervisorRequestDecisionStatus decision={decision} />
-          <span className="font-medium text-neutral-100 light:text-neutral-900">
-            {request.agent}
-          </span>
-          <span className="text-[10px] text-neutral-400">
-            {formatSteeringTimestamp(request.createdAt)}
-          </span>
-          {request.expiresAt !== undefined && request.status === "open" && (
-            <span className="text-[10px] text-neutral-400">
-              expires {formatSteeringTimestamp(request.expiresAt)}
-            </span>
-          )}
-        </div>
-        <p className="mt-1 truncate text-[11px] text-neutral-300" title={request.message}>
-          {supervisorRequestPreview(request.message)}
-        </p>
-      </button>
-      {expanded && (
-        <div
-          id={detailsId}
-          className="border-t border-neutral-700 bg-neutral-950 px-2.5 py-2.5 text-neutral-100 light:border-neutral-200 light:bg-white light:text-neutral-900"
-        >
-          <div className="whitespace-pre-wrap break-words">{request.message}</div>
-          {interview !== undefined && (
-            <pre className="mt-2 max-h-40 overflow-auto rounded bg-neutral-900 p-2 text-[11px] text-neutral-300 light:bg-neutral-100 light:text-neutral-700">
-              {interview}
-            </pre>
-          )}
-          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 font-mono text-[10px] text-neutral-300 light:text-neutral-600">
-            <dt>parentSessionId</dt>
-            <dd className="break-all">{request.parentSessionId}</dd>
-            <dt>runId</dt>
-            <dd className="break-all">{request.runId}</dd>
-            <dt>requestId</dt>
-            <dd className="break-all">{request.requestId}</dd>
-          </dl>
-          {request.replyMessage !== undefined && (
-            <div className="mt-2 rounded border border-neutral-700 bg-neutral-900 p-2 text-[11px] text-neutral-100 light:border-neutral-300 light:bg-neutral-50 light:text-neutral-800">
-              <div className="mb-1 font-medium">Supervisor reply</div>
-              <div className="whitespace-pre-wrap break-words">{request.replyMessage}</div>
-            </div>
-          )}
-          {canReply && (
-            <div className="mt-3">
-              <label htmlFor={`supervisor-reply-${request.requestId}`} className="sr-only">
-                {request.reason === "need_decision"
-                  ? `Optional decision note for supervisor request ${request.requestId}`
-                  : `Reply to supervisor request ${request.requestId}`}
-              </label>
-              <textarea
-                id={`supervisor-reply-${request.requestId}`}
-                value={answer}
-                onChange={(event) => setAnswer(event.target.value)}
-                rows={3}
-                maxLength={MAX_SUPERVISOR_REPLY_BYTES}
-                placeholder={
-                  request.reason === "need_decision"
-                    ? "Optional decision note sent with Approve or Reject"
-                    : "Reply to this exact supervisor request"
-                }
-                className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 light:border-neutral-300 light:bg-white light:text-neutral-900"
-              />
-              <div className="mt-2 flex flex-wrap justify-end gap-2">
-                {request.reason === "need_decision" && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void submit("approve")}
-                      disabled={sending}
-                      className="rounded border border-emerald-700 px-2 py-1 text-[11px] text-emerald-200 hover:bg-emerald-950/60 disabled:opacity-50 light:border-emerald-500 light:text-emerald-800"
-                    >
-                      Approve
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        const normalized = answer.trim();
-                        if (
-                          new TextEncoder().encode(normalized).byteLength >
-                          MAX_SUPERVISOR_REPLY_BYTES
-                        ) {
-                          setError(
-                            "A supervisor reply must contain non-whitespace text of at most 64 KiB.",
-                          );
-                          return;
-                        }
-                        onDecline(request.requestId, normalized || undefined, event.currentTarget);
-                      }}
-                      disabled={sending}
-                      className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-200 hover:bg-red-950/60 disabled:opacity-50 light:border-red-300 light:text-red-800"
-                    >
-                      Reject
-                    </button>
-                  </>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void submit("reply")}
-                  disabled={
-                    sending ||
-                    answer.trim().length === 0 ||
-                    new TextEncoder().encode(answer.trim()).byteLength > MAX_SUPERVISOR_REPLY_BYTES
-                  }
-                  className="flex items-center gap-1 rounded border border-neutral-500 px-2 py-1 text-[11px] text-neutral-100 hover:border-neutral-300 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
-                >
-                  <Send size={11} />
-                  {sending ? "Sending…" : "Reply (no decision)"}
-                </button>
-              </div>
-            </div>
-          )}
-          {error !== undefined && (
-            <div
-              role="alert"
-              aria-live="polite"
-              className="mt-2 rounded border border-red-800/60 bg-red-950/30 px-2 py-1.5 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800"
-            >
-              {error}
-            </div>
-          )}
         </div>
       )}
     </li>
