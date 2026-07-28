@@ -1,8 +1,8 @@
 import type { SubagentSupervisorDecision } from "./api-client/types";
 
 /**
- * The only decision states Forge records. Text is intentionally never parsed:
- * native supervisor replies are transport messages, not decision protocol.
+ * The only decision states Forge records. Native reply text is not an
+ * authoritative Forge decision protocol.
  */
 export const NO_SUPERVISOR_DECISION: SubagentSupervisorDecision = "no-decision";
 
@@ -14,6 +14,64 @@ export function isExplicitSupervisorDecision(
   decision: SubagentSupervisorDecision,
 ): decision is "approved" | "rejected" {
   return decision === "approved" || decision === "rejected";
+}
+
+/**
+ * Chat-only compatibility presentation for a successful, exactly paired native
+ * `subagent_supervisor` reply. This does not record or infer a Forge decision.
+ */
+export function nativeSupervisorReplyChatPresentation(
+  toolCall: unknown,
+  toolResult: unknown,
+): SubagentSupervisorDecision {
+  if (
+    typeof toolCall !== "object" ||
+    toolCall === null ||
+    Array.isArray(toolCall) ||
+    typeof toolResult !== "object" ||
+    toolResult === null ||
+    Array.isArray(toolResult)
+  ) {
+    return NO_SUPERVISOR_DECISION;
+  }
+  const call = toolCall as Record<string, unknown>;
+  const result = toolResult as Record<string, unknown>;
+  const args = call.input ?? call.arguments;
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    return NO_SUPERVISOR_DECISION;
+  }
+  const reply = args as Record<string, unknown>;
+  const details = result.details;
+  if (
+    call.name !== "subagent_supervisor" ||
+    typeof call.id !== "string" ||
+    call.id.length === 0 ||
+    reply.action !== "reply" ||
+    typeof reply.replyTo !== "string" ||
+    reply.replyTo.length === 0 ||
+    typeof reply.message !== "string" ||
+    result.role !== "toolResult" ||
+    result.toolName !== "subagent_supervisor" ||
+    result.toolCallId !== call.id ||
+    result.isError !== false ||
+    typeof details !== "object" ||
+    details === null ||
+    Array.isArray(details) ||
+    (details as Record<string, unknown>).replyTo !== reply.replyTo
+  ) {
+    return NO_SUPERVISOR_DECISION;
+  }
+
+  // Preserve the historic native Chat wording classification exactly.
+  if (/\b(rejected|reject|denied|declined|abgelehnt|verweigert)\b/i.test(reply.message)) {
+    return "rejected";
+  }
+  if (
+    /\b(approved|approve|accepted|proceed|continue|genehmigt|freigegeben)\b/i.test(reply.message)
+  ) {
+    return "approved";
+  }
+  return NO_SUPERVISOR_DECISION;
 }
 
 export interface SupervisorDecisionPresentation {

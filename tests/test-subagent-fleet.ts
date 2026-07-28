@@ -192,7 +192,7 @@ async function main(): Promise<void> {
   );
 
   assert(
-    "Chat and Fleet classify only persisted decision enums for live, legacy, and tool-result metadata",
+    "Fleet keeps persisted decisions authoritative while Chat labels native replies separately",
     supervisorDecisionFromValue("approved") === "approved" &&
       supervisorDecisionFromValue("Rejected in arbitrary free text") === "no-decision" &&
       supervisorDecisionFromForgeReplyEvent({
@@ -223,7 +223,9 @@ async function main(): Promise<void> {
       supervisorDecisionPresentation("unexpected").label === "No decision recorded" &&
       supervisorDecisionPresentation("unexpected").className.includes("neutral") &&
       chatViewSource.includes('message.customType === "subagent_supervisor_reply"') &&
-      chatViewSource.includes("supervisorDecisionFromSupervisorToolResult"),
+      chatViewSource.includes("nativeSupervisorReplyChatPresentation") &&
+      chatViewSource.includes("Native supervisor reply") &&
+      !chatViewSource.includes("supervisorDecisionFromSupervisorToolResult"),
   );
   assert(
     "Fleet stop confirmation remains a single modal state with accessible cancellation",

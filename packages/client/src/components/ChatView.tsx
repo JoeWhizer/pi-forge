@@ -48,8 +48,9 @@ import { useQuickActionRunsStore, type QuickActionRun } from "../store/quick-act
 import { placeChatTimelineItems, type ChatTimelinePosition } from "../lib/chat-timeline";
 import { parseSubagentDetails, type SubagentResult } from "../lib/subagent-parser";
 import {
+  nativeSupervisorReplyChatPresentation,
+  NO_SUPERVISOR_DECISION,
   supervisorDecisionFromForgeReplyEvent,
-  supervisorDecisionFromSupervisorToolResult,
   supervisorDecisionFromValue,
   supervisorDecisionPresentation,
 } from "../lib/subagent-supervisor-decision";
@@ -1590,11 +1591,13 @@ function SupervisorReplyCard({
   requestId,
   message,
   decision,
+  native = false,
   text,
 }: {
   requestId: string;
   message: string;
   decision: SubagentSupervisorDecision;
+  native?: boolean;
   text?: string;
 }) {
   const presentation = supervisorDecisionPresentation(decision);
@@ -1606,7 +1609,9 @@ function SupervisorReplyCard({
         className={`flex cursor-pointer list-none items-center gap-2 ${presentation.toneClassName} [&::-webkit-details-marker]:hidden`}
       >
         {classified === "rejected" ? <X size={14} /> : <Check size={14} />}
-        <span className="font-medium">Supervisor reply</span>
+        <span className="font-medium">
+          {native ? "Native supervisor reply" : "Supervisor reply"}
+        </span>
         <span className="ml-auto font-mono text-[10px] uppercase tracking-wide">
           {presentation.label}
         </span>
@@ -2226,7 +2231,8 @@ function ToolCallEntry({
       <SupervisorReplyCard
         requestId={requestId}
         message={reply}
-        decision={supervisorDecisionFromSupervisorToolResult(result?.details)}
+        decision={nativeSupervisorReplyChatPresentation(block, result)}
+        native
         text={outputText}
       />
     );
@@ -2414,7 +2420,8 @@ function ToolResult({ message }: { message: AgentMessageLike }) {
       <SupervisorReplyCard
         requestId={requestId}
         message=""
-        decision={supervisorDecisionFromSupervisorToolResult(details)}
+        decision={NO_SUPERVISOR_DECISION}
+        native
         text={text}
       />
     );
