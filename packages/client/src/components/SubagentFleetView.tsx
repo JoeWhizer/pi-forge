@@ -8,11 +8,20 @@ import {
   Loader2,
   PauseCircle,
   RotateCcw,
+  Send,
   Square,
   Trash2,
   XCircle,
 } from "lucide-react";
-import { type SubagentFleetChild, type SubagentFleetState } from "../lib/api-client";
+import {
+  api,
+  ApiError,
+  type SubagentFleetChild,
+  type SubagentFleetRun,
+  type SubagentFleetState,
+  type SubagentFleetSteeringRequest,
+  type SubagentFleetSteeringState,
+} from "../lib/api-client";
 import {
   createSubagentFleetNavigationGuard,
   filterCleanedSubagentFleetRuns,
@@ -302,6 +311,7 @@ export function SubagentFleetView({ onClose }: Props) {
                                       {run.error}
                                     </div>
                                   )}
+                                  <FleetSteering run={run} onSubmitted={() => load(true)} />
                                   {run.children.length > 0 && (
                                     <div className="border-t border-neutral-800 px-3 py-2 light:border-neutral-200">
                                       <div className="ml-2 space-y-1 border-l border-neutral-700 pl-3 light:border-neutral-300">
@@ -344,6 +354,171 @@ export function SubagentFleetView({ onClose }: Props) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function formatSteeringTimestamp(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(timestamp);
+}
+
+function steeringStatus(state: SubagentFleetSteeringState): { label: string; detail: string } {
+  return {
+    queued: {
+      label: "Queued for control channel",
+      detail: "Persisted for the pi-subagents runner; it has not confirmed receipt.",
+    },
+    scheduled: {
+      label: "Scheduled",
+      detail: "The runner scheduled this for a pending child; Pi has not accepted it yet.",
+    },
+    routed: {
+      label: "Sent to child control inbox",
+      detail: "The runner forwarded it to the child; Pi has not accepted it yet.",
+    },
+    delivered: {
+      label: "Pi accepted input",
+      detail:
+        "Pi accepted the correlated steering input. This does not confirm processing or compliance.",
+    },
+    late: {
+      label: "Pi accepted input late",
+      detail:
+        "Pi accepted the input after its original delivery window; processing is not confirmed.",
+    },
+    failed: {
+      label: "Delivery failed",
+      detail: "The runner or child reported that delivery failed.",
+    },
+    recovered: {
+      label: "Recovered by pi-subagents",
+      detail:
+        "pi-subagents recovered the child; this is not an acknowledgment that it processed the steer.",
+    },
+  }[state];
+}
+
+function SteeringRequest({ request }: { request: SubagentFleetSteeringRequest }) {
+  return (
+    <li className="rounded border border-neutral-800/80 bg-neutral-950/60 px-2 py-1.5 light:border-neutral-200 light:bg-neutral-50">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-neutral-400">
+        <span>{formatSteeringTimestamp(request.submittedAt)}</span>
+        <span className="font-mono text-[10px] text-neutral-600" title={request.requestId}>
+          {request.requestId.slice(0, 12)}
+        </span>
+        {request.targets.map((target) => {
+          const status = steeringStatus(target.state);
+          return (
+            <span
+              key={target.index}
+              title={`${status.detail}${target.reason ? ` ${target.reason}` : ""}`}
+            >
+              child {target.index + 1}: {status.label}
+              {target.updatedAt !== undefined
+                ? ` (${formatSteeringTimestamp(target.updatedAt)})`
+                : ""}
+            </span>
+          );
+        })}
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-xs text-neutral-200 light:text-neutral-800">
+        {request.messagePreview}
+      </div>
+      {request.targets.some((target) => target.reason !== undefined) && (
+        <div className="mt-1 text-[11px] text-red-300 light:text-red-800">
+          {request.targets
+            .map((target) => target.reason)
+            .filter((reason): reason is string => reason !== undefined)
+            .join(" ")}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function FleetSteering({
+  run,
+  onSubmitted,
+}: {
+  run: SubagentFleetRun;
+  onSubmitted: () => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const steerable = run.state === "running";
+
+  const submit = async (): Promise<void> => {
+    const message = text.trim();
+    if (!message || sending || !steerable) return;
+    setSending(true);
+    setError(undefined);
+    try {
+      await api.steerSubagentFleetRun(run.runId, message);
+      setText("");
+      await onSubmitted();
+    } catch (err) {
+      setError(err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-neutral-800 px-3 py-2 light:border-neutral-200">
+      <div className="mb-1 text-xs font-medium text-neutral-300 light:text-neutral-700">
+        Live steer
+      </div>
+      {steerable ? (
+        <>
+          <div className="flex gap-2">
+            <textarea
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              rows={2}
+              maxLength={131072}
+              placeholder="Send guidance to the running child or children"
+              className="min-w-0 flex-1 resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 light:border-neutral-300 light:bg-white light:text-neutral-900"
+            />
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={sending || text.trim().length === 0}
+              className="flex h-fit items-center gap-1 rounded border border-neutral-700 px-2 py-1.5 text-xs text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
+            >
+              <Send size={12} />
+              {sending ? "Queuing…" : "Send steer"}
+            </button>
+          </div>
+          <p className="mt-1 text-[10px] text-neutral-500">
+            Queues a control-channel request; it does not interrupt a tool or confirm agent
+            processing.
+          </p>
+        </>
+      ) : (
+        <p className="text-[11px] text-neutral-500">
+          Steering is unavailable because this run is {run.state}. Start a new run to send guidance.
+        </p>
+      )}
+      {error !== undefined && (
+        <div className="mt-2 rounded border border-red-800/60 bg-red-950/30 px-2 py-1.5 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800">
+          {error}
+        </div>
+      )}
+      {run.steering.length > 0 && (
+        <div className="mt-2">
+          <div className="mb-1 text-[11px] text-neutral-400">Steering for this exact run</div>
+          <ul className="space-y-1">
+            {run.steering.map((request) => (
+              <SteeringRequest key={request.requestId} request={request} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

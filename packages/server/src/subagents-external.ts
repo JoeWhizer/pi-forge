@@ -1,5 +1,6 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as os from "node:os";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -38,6 +39,29 @@ export interface ExternalSubagentFleetChild {
   error?: string;
 }
 
+export type ExternalSubagentSteeringState =
+  | "queued"
+  | "scheduled"
+  | "routed"
+  | "delivered"
+  | "late"
+  | "failed"
+  | "recovered";
+
+export interface ExternalSubagentFleetSteerTarget {
+  index: number;
+  state: ExternalSubagentSteeringState;
+  updatedAt?: number;
+  reason?: string;
+}
+
+export interface ExternalSubagentFleetSteer {
+  requestId: string;
+  submittedAt: number;
+  messagePreview: string;
+  targets: ExternalSubagentFleetSteerTarget[];
+}
+
 export interface ExternalSubagentFleetRun {
   runId: string;
   parentSessionId?: string;
@@ -49,6 +73,7 @@ export interface ExternalSubagentFleetRun {
   lastActivityAt?: number;
   durationMs?: number;
   error?: string;
+  steering: ExternalSubagentFleetSteer[];
   children: ExternalSubagentFleetChild[];
 }
 
@@ -65,6 +90,38 @@ interface AsyncStatusStep {
   error?: string;
 }
 
+interface AsyncSteeringTarget {
+  index?: number;
+  state?: ExternalSubagentSteeringState;
+  routedAt?: number;
+  deliveredAt?: number;
+  lateDeliveredAt?: number;
+  failedAt?: number;
+  recoveredAt?: number;
+  reason?: string;
+}
+
+interface AsyncSteeringRequest {
+  id?: string;
+  requestedAt?: number;
+  messagePreview?: string;
+  targets?: AsyncSteeringTarget[];
+}
+
+interface AsyncSteeringStatus {
+  recent?: AsyncSteeringRequest[];
+}
+
+interface AsyncSteerRequestFile {
+  type?: string;
+  id?: string;
+  ts?: number;
+  message?: string;
+  targetIndex?: number;
+  targetIndexes?: number[];
+  source?: string;
+}
+
 interface AsyncStatusFile {
   runId?: string;
   sessionId?: string;
@@ -79,6 +136,7 @@ interface AsyncStatusFile {
   lastUpdate?: number;
   durationMs?: number;
   error?: string;
+  steering?: AsyncSteeringStatus;
   steps?: AsyncStatusStep[];
 }
 
@@ -294,6 +352,120 @@ function projectedState(
   return statusState === "complete" && hasFailedResult(result) ? "failed" : statusState;
 }
 
+function validSteeringState(value: unknown): value is ExternalSubagentSteeringState {
+  return (
+    value === "queued" ||
+    value === "scheduled" ||
+    value === "routed" ||
+    value === "delivered" ||
+    value === "late" ||
+    value === "failed" ||
+    value === "recovered"
+  );
+}
+
+function steeringTargetFrom(
+  value: AsyncSteeringTarget,
+): ExternalSubagentFleetSteerTarget | undefined {
+  const index = value.index;
+  if (
+    typeof index !== "number" ||
+    !Number.isInteger(index) ||
+    index < 0 ||
+    !validSteeringState(value.state)
+  ) {
+    return undefined;
+  }
+  const target: ExternalSubagentFleetSteerTarget = { index, state: value.state };
+  const stateTimestamp = {
+    queued: undefined,
+    scheduled: undefined,
+    routed: value.routedAt,
+    delivered: value.deliveredAt,
+    late: value.lateDeliveredAt,
+    failed: value.failedAt,
+    recovered: value.recoveredAt,
+  }[value.state];
+  const updatedAt = finiteNonNegative(
+    stateTimestamp ??
+      value.routedAt ??
+      value.deliveredAt ??
+      value.lateDeliveredAt ??
+      value.failedAt ??
+      value.recoveredAt,
+  );
+  const reason = nonEmptyString(value.reason);
+  if (updatedAt !== undefined) target.updatedAt = updatedAt;
+  if (reason !== undefined) target.reason = reason;
+  return target;
+}
+
+function steeringFromStatus(status: AsyncStatusFile): ExternalSubagentFleetSteer[] {
+  if (!Array.isArray(status.steering?.recent)) return [];
+  return status.steering.recent.flatMap((request) => {
+    const requestId = nonEmptyString(request.id, 256);
+    const submittedAt = finiteNonNegative(request.requestedAt);
+    const messagePreview = nonEmptyString(request.messagePreview, 160);
+    const targets = Array.isArray(request.targets)
+      ? request.targets.flatMap((target) => {
+          const projected = steeringTargetFrom(target);
+          return projected === undefined ? [] : [projected];
+        })
+      : [];
+    if (requestId === undefined || submittedAt === undefined || messagePreview === undefined)
+      return [];
+    return [{ requestId, submittedAt, messagePreview, targets }];
+  });
+}
+
+async function queuedSteeringFromControl(
+  asyncDir: string,
+  knownRequestIds: ReadonlySet<string>,
+): Promise<ExternalSubagentFleetSteer[]> {
+  const requestDir = join(asyncDir, "control", "steer-requests");
+  let entries: string[];
+  try {
+    entries = await readdir(requestDir);
+  } catch {
+    return [];
+  }
+  const queued = await Promise.all(
+    entries
+      .filter((entry) => entry.endsWith(".json"))
+      .map(async (entry) => readJson<AsyncSteerRequestFile>(join(requestDir, entry))),
+  );
+  return queued.flatMap((request) => {
+    const requestId = nonEmptyString(request?.id, 256);
+    const submittedAt = finiteNonNegative(request?.ts);
+    const message = nonEmptyString(request?.message, 128 * 1024);
+    if (
+      request?.type !== "steer" ||
+      requestId === undefined ||
+      submittedAt === undefined ||
+      message === undefined ||
+      knownRequestIds.has(requestId)
+    ) {
+      return [];
+    }
+    const targetIndexes =
+      Number.isInteger(request.targetIndex) && request.targetIndex! >= 0
+        ? [request.targetIndex!]
+        : Array.isArray(request.targetIndexes)
+          ? request.targetIndexes.filter(
+              (index): index is number => Number.isInteger(index) && index >= 0,
+            )
+          : [];
+    return [
+      {
+        requestId,
+        submittedAt,
+        messagePreview: message.slice(0, 160),
+        targets: targetIndexes.map((index) => ({ index, state: "queued" as const })),
+      },
+    ];
+  });
+}
+
 function durationFrom(
   durationMs: unknown,
   startedAt: number | undefined,
@@ -308,6 +480,7 @@ function durationFrom(
 async function fleetCacheStamp(
   statusPath: string,
   resultPath: string,
+  steerRequestsPath: string,
 ): Promise<string | undefined> {
   try {
     const statusInfo = await stat(statusPath);
@@ -318,7 +491,14 @@ async function fleetCacheStamp(
     } catch {
       // A terminal status can land before its optional result artifact.
     }
-    return `${statusInfo.mtimeMs}:${statusInfo.size}:${resultStamp}`;
+    let steerRequestsStamp = "missing";
+    try {
+      const steerRequestsInfo = await stat(steerRequestsPath);
+      steerRequestsStamp = `${steerRequestsInfo.mtimeMs}:${steerRequestsInfo.size}`;
+    } catch {
+      // The control inbox does not exist until a live runner initializes it.
+    }
+    return `${statusInfo.mtimeMs}:${statusInfo.size}:${resultStamp}:${steerRequestsStamp}`;
   } catch {
     return undefined;
   }
@@ -388,7 +568,11 @@ async function readFleetRun(
 ): Promise<ExternalSubagentFleetRun | undefined> {
   const statusPath = join(SUBAGENTS_ASYNC_DIR, root, "status.json");
   const resultPath = join(SUBAGENTS_RESULTS_DIR, `${root}.json`);
-  const stamp = await fleetCacheStamp(statusPath, resultPath);
+  const stamp = await fleetCacheStamp(
+    statusPath,
+    resultPath,
+    join(SUBAGENTS_ASYNC_DIR, root, "control", "steer-requests"),
+  );
   if (stamp === undefined) return undefined;
   const cached = fleetRunCache.get(root);
   if (
@@ -420,7 +604,15 @@ async function readFleetRun(
   );
   const startedAt = finiteNonNegative(status.startedAt);
   const endedAt = finiteNonNegative(status.endedAt);
-  const run: ExternalSubagentFleetRun = { runId, state: runState, children };
+  const steeringFromLifecycle = steeringFromStatus(status);
+  const queuedSteering = await queuedSteeringFromControl(
+    join(SUBAGENTS_ASYNC_DIR, root),
+    new Set(steeringFromLifecycle.map((request) => request.requestId)),
+  );
+  const steering = [...steeringFromLifecycle, ...queuedSteering].sort(
+    (a, b) => b.submittedAt - a.submittedAt || a.requestId.localeCompare(b.requestId),
+  );
+  const run: ExternalSubagentFleetRun = { runId, state: runState, steering, children };
   const mode = nonEmptyString(status.mode, 100);
   const error =
     nonEmptyString(status.error) ??
@@ -448,6 +640,111 @@ async function readFleetRun(
   // large recent-output fields on every fleet poll.
   cacheFleetRun(root, { stamp, run });
   return run;
+}
+
+export type ExternalSubagentSteerResult =
+  | { accepted: true; requestId: string; submittedAt: number }
+  | { accepted: false; code: "run_not_found" | "run_not_steerable" | "run_stale"; message: string };
+
+/**
+ * Queue a steer using pi-subagents 0.37's file control protocol. A successful
+ * result only confirms the request was atomically queued for its runner; the
+ * Fleet projection later exposes the runner/Pi delivery acknowledgment.
+ */
+export async function queueExternalSubagentSteer(
+  runId: string,
+  message: string,
+): Promise<ExternalSubagentSteerResult> {
+  const normalizedRunId = runId.trim();
+  const normalizedMessage = message.trim();
+  if (!normalizedRunId) {
+    return { accepted: false, code: "run_not_found", message: "The subagent run was not found." };
+  }
+  if (!normalizedMessage) {
+    return {
+      accepted: false,
+      code: "run_not_steerable",
+      message: "Steering text must not be empty.",
+    };
+  }
+  if (Buffer.byteLength(normalizedMessage, "utf8") > 128 * 1024) {
+    return {
+      accepted: false,
+      code: "run_not_steerable",
+      message: "Steering text exceeds the pi-subagents 128 KiB control-channel limit.",
+    };
+  }
+
+  for (const root of await readStatusRoots()) {
+    const asyncDir = join(SUBAGENTS_ASYNC_DIR, root);
+    const status = await readJson<AsyncStatusFile>(join(asyncDir, "status.json"));
+    if ((stableRunId(status?.runId) ?? root) !== normalizedRunId) continue;
+    if (status?.state !== "running") {
+      return {
+        accepted: false,
+        code: "run_not_steerable",
+        message: `Run ${normalizedRunId} is ${status?.state ?? "not active"}; only running runs can receive live steering.`,
+      };
+    }
+    if (existsSync(join(asyncDir, "control", "steer-inbox-closed.json"))) {
+      return {
+        accepted: false,
+        code: "run_stale",
+        message: `Run ${normalizedRunId} stopped accepting steering. Refresh Fleet and start a new run if it has ended.`,
+      };
+    }
+    const targetIndexes = (status.steps ?? [])
+      .map((step, index) => (step.status === "running" ? index : undefined))
+      .filter((index): index is number => index !== undefined);
+    if (targetIndexes.length === 0) {
+      return {
+        accepted: false,
+        code: "run_stale",
+        message: `Run ${normalizedRunId} has no running child to receive steering. Refresh Fleet before trying again.`,
+      };
+    }
+
+    const requestId = randomUUID();
+    const submittedAt = Date.now();
+    const request = {
+      type: "steer",
+      id: requestId,
+      ts: submittedAt,
+      message: normalizedMessage,
+      targetIndexes,
+      source: "pi-forge",
+    };
+    const requestDir = join(asyncDir, "control", "steer-requests");
+    const name = `${String(submittedAt).padStart(13, "0")}-${Buffer.from(requestId).toString("base64url")}.json`;
+    const target = join(requestDir, name);
+    const temporary = join(requestDir, `.${name}.${randomUUID()}.tmp`);
+    try {
+      await mkdir(requestDir, { recursive: true });
+      await writeFile(temporary, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+      await rename(temporary, target);
+      if (existsSync(join(asyncDir, "control", "steer-inbox-closed.json"))) {
+        await unlink(target).catch(() => undefined);
+        return {
+          accepted: false,
+          code: "run_stale",
+          message: `Run ${normalizedRunId} stopped accepting steering before the request was committed. Refresh Fleet and start a new run if it has ended.`,
+        };
+      }
+      return { accepted: true, requestId, submittedAt };
+    } catch {
+      await unlink(temporary).catch(() => undefined);
+      return {
+        accepted: false,
+        code: "run_stale",
+        message: `The control channel for run ${normalizedRunId} is unavailable. Refresh Fleet and verify the run is still active.`,
+      };
+    }
+  }
+  return {
+    accepted: false,
+    code: "run_not_found",
+    message: `Run ${normalizedRunId} was not found.`,
+  };
 }
 
 /**

@@ -385,6 +385,30 @@ complete, and failed status indicators remain available. The fleet currently
 polls while open; artifacts with missing parent/child session metadata remain
 visible but cannot offer session navigation.
 
+### Fleet live steering
+
+A running Fleet row can receive a **Send steer** message. Forge accepts only an
+exact, currently running lifecycle `runId`; terminal runs, a closed control
+inbox, or a run with no running child return an actionable error instead of
+leaving a request in a stale artifact. The request is atomically written to the
+pi-subagents 0.37 `control/steer-requests` file channel and the Fleet refreshes
+immediately. Forge does not modify the installed pi-subagents extension.
+
+Each request is retained on its exact Fleet run with its submission time and a
+transport status. **Queued for control channel** means Forge persisted the
+request but the runner has not recorded receipt. **Sent to child control inbox**
+means the runner forwarded it to the child Pi process. **Pi accepted input** is
+a real pi-subagents correlated acknowledgement: the child extension received
+Pi's `input` event for that message. It confirms input acceptance only; it does
+not claim that the model processed, followed, or completed the guidance.
+
+Steering is non-interrupting. In particular, pi-subagents does not abort a
+running synchronous turn or tool such as `sleep`: Pi can accept queued steering
+only at its next yield/agent decision boundary, normally after the current tool
+returns. Therefore the delivery acknowledgement can legitimately remain queued
+or sent until that boundary; it is not evidence of a failed request. Forge never
+labels this delay as an interruption or as agent processing.
+
 ## Docker bind mounts
 
 The shipped `docker-compose.yml` mounts these paths by default:

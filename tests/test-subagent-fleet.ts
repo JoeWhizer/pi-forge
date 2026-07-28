@@ -48,6 +48,13 @@ async function main(): Promise<void> {
     SUBAGENTS_ASYNC_DIR: string;
     SUBAGENTS_RESULTS_DIR: string;
     listExternalSubagentFleetRuns: (forceRefresh?: boolean) => Promise<SubagentFleetRun[]>;
+    queueExternalSubagentSteer: (
+      runId: string,
+      message: string,
+    ) => Promise<
+      | { accepted: true; requestId: string; submittedAt: number }
+      | { accepted: false; code: string; message: string }
+    >;
     _hasExternalSubagentFleetRunCacheEntryForTests: (root: string) => boolean;
   };
 
@@ -181,6 +188,76 @@ async function main(): Promise<void> {
       "utf8",
     );
 
+    const queuedSteer = await external.queueExternalSubagentSteer(
+      activeRunId,
+      "Show this steer for the exact active run.",
+    );
+    assert(
+      "Fleet steer queues only an exact running run",
+      queuedSteer.accepted,
+      JSON.stringify(queuedSteer),
+    );
+    const queuedRuns = await external.listExternalSubagentFleetRuns(true);
+    const queuedRequest = queuedSteer.accepted
+      ? queuedRuns
+          .find((run) => run.runId === activeRunId)
+          ?.steering.find((request) => request.requestId === queuedSteer.requestId)
+      : undefined;
+    assert(
+      "Fleet projects submitted steering as queued before runner receipt",
+      queuedRequest?.submittedAt === (queuedSteer.accepted ? queuedSteer.submittedAt : undefined) &&
+        queuedRequest.targets[0]?.state === "queued",
+      JSON.stringify(queuedRequest),
+    );
+
+    const activeStatusPath = join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "status.json");
+    const activeStatus = JSON.parse(await readFile(activeStatusPath, "utf8")) as {
+      lastActivityAt: number;
+      steering?: unknown;
+    };
+    if (queuedSteer.accepted) {
+      activeStatus.steering = {
+        recent: [
+          {
+            id: queuedSteer.requestId,
+            requestedAt: queuedSteer.submittedAt,
+            messagePreview: "Show this steer for the exact active run.",
+            targets: [
+              {
+                index: 0,
+                state: "delivered",
+                deliveredAt: queuedSteer.submittedAt + 1_000,
+              },
+            ],
+          },
+        ],
+      };
+      await rm(join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "control", "steer-requests"), {
+        recursive: true,
+        force: true,
+      });
+      await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
+    }
+    const acknowledgedRuns = await external.listExternalSubagentFleetRuns(true);
+    const acknowledgedRequest = queuedSteer.accepted
+      ? acknowledgedRuns
+          .find((run) => run.runId === activeRunId)
+          ?.steering.find((request) => request.requestId === queuedSteer.requestId)
+      : undefined;
+    assert(
+      "Fleet projects Pi delivery acknowledgment separately from queued control-channel state",
+      acknowledgedRequest?.targets[0]?.state === "delivered" &&
+        acknowledgedRequest.targets[0]?.updatedAt ===
+          (queuedSteer.accepted ? queuedSteer.submittedAt + 1_000 : undefined),
+      JSON.stringify(acknowledgedRequest),
+    );
+    const terminalSteer = await external.queueExternalSubagentSteer(failedRunId, "too late");
+    assert(
+      "Fleet rejects steering terminal runs with an actionable status",
+      !terminalSteer.accepted && terminalSteer.code === "run_not_steerable",
+      JSON.stringify(terminalSteer),
+    );
+
     const allRuns = await external.listExternalSubagentFleetRuns();
     const active = allRuns.find((run) => run.runId === activeRunId);
     const failed = allRuns.find((run) => run.runId === failedRunId);
@@ -219,10 +296,6 @@ async function main(): Promise<void> {
         processFailed.children[0]?.error === "Subagent exited with code 1",
       JSON.stringify(processFailed),
     );
-    const activeStatusPath = join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "status.json");
-    const activeStatus = JSON.parse(await readFile(activeStatusPath, "utf8")) as {
-      lastActivityAt: number;
-    };
     activeStatus.lastActivityAt = 3_000;
     await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
     const forcedRuns = await external.listExternalSubagentFleetRuns(true);

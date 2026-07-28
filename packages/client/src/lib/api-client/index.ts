@@ -35,6 +35,10 @@ import {
   type SubagentFleetChild,
   type SubagentFleetRun,
   type SubagentFleetState,
+  type SubagentFleetSteeringRequest,
+  type SubagentFleetSteeringState,
+  type SubagentFleetSteeringTarget,
+  type SubagentFleetSteerResponse,
   type ExtensionCommandSummary,
   type SessionSummary,
   type PromptSummary,
@@ -471,18 +475,78 @@ function vSubagentFleetChild(value: unknown, status: number): SubagentFleetChild
   return out;
 }
 
+function vSubagentFleetSteeringState(value: unknown, status: number): SubagentFleetSteeringState {
+  if (
+    value !== "queued" &&
+    value !== "scheduled" &&
+    value !== "routed" &&
+    value !== "delivered" &&
+    value !== "late" &&
+    value !== "failed" &&
+    value !== "recovered"
+  ) {
+    fail(status, "expected pi-subagents steering state");
+  }
+  return value;
+}
+
+function vSubagentFleetSteering(value: unknown, status: number): SubagentFleetSteeringRequest[] {
+  if (!Array.isArray(value)) fail(status, "expected pi-subagents steering requests");
+  return value.map((request) => {
+    if (
+      !isObject(request) ||
+      typeof request.requestId !== "string" ||
+      typeof request.submittedAt !== "number" ||
+      !Number.isFinite(request.submittedAt) ||
+      typeof request.messagePreview !== "string" ||
+      !Array.isArray(request.targets)
+    ) {
+      fail(status, "expected pi-subagents steering request");
+    }
+    return {
+      requestId: request.requestId,
+      submittedAt: request.submittedAt,
+      messagePreview: request.messagePreview,
+      targets: request.targets.map((target) => {
+        if (
+          !isObject(target) ||
+          typeof target.index !== "number" ||
+          !Number.isInteger(target.index)
+        ) {
+          fail(status, "expected pi-subagents steering target");
+        }
+        const out: SubagentFleetSteeringTarget = {
+          index: target.index,
+          state: vSubagentFleetSteeringState(target.state, status),
+        };
+        if (typeof target.updatedAt === "number" && Number.isFinite(target.updatedAt)) {
+          out.updatedAt = target.updatedAt;
+        }
+        if (typeof target.reason === "string") out.reason = target.reason;
+        return out;
+      }),
+    };
+  });
+}
+
 function vSubagentFleet(value: unknown, status: number): { runs: SubagentFleetRun[] } {
   if (!isObject(value) || !Array.isArray(value.runs)) {
     fail(status, "expected { runs: SubagentFleetRun[] }");
   }
   return {
     runs: value.runs.map((raw) => {
-      if (!isObject(raw) || typeof raw.runId !== "string" || !Array.isArray(raw.children)) {
+      if (
+        !isObject(raw) ||
+        typeof raw.runId !== "string" ||
+        !Array.isArray(raw.children) ||
+        !Array.isArray(raw.steering)
+      ) {
         fail(status, "expected SubagentFleetRun");
       }
       const run: SubagentFleetRun = {
         runId: raw.runId,
         state: vSubagentFleetState(raw.state, status),
+        steering: vSubagentFleetSteering(raw.steering, status),
         children: raw.children.map((child) => vSubagentFleetChild(child, status)),
       };
       if (typeof raw.parentSessionId === "string") run.parentSessionId = raw.parentSessionId;
@@ -494,6 +558,19 @@ function vSubagentFleet(value: unknown, status: number): { runs: SubagentFleetRu
       return run;
     }),
   };
+}
+
+function vSubagentFleetSteerResponse(value: unknown, status: number): SubagentFleetSteerResponse {
+  if (
+    !isObject(value) ||
+    value.accepted !== true ||
+    typeof value.requestId !== "string" ||
+    typeof value.submittedAt !== "number" ||
+    !Number.isFinite(value.submittedAt)
+  ) {
+    fail(status, "expected accepted pi-subagents steer response");
+  }
+  return { accepted: true, requestId: value.requestId, submittedAt: value.submittedAt };
 }
 
 function vSessionSummary(value: unknown, status: number): SessionSummary {
@@ -1938,6 +2015,12 @@ export const api = {
     request(
       `/api/v1/subagent-fleet${forceRefresh ? `?refresh=${Date.now()}` : ""}`,
       vSubagentFleet,
+    ),
+  steerSubagentFleetRun: (runId: string, text: string) =>
+    request(
+      `/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`,
+      vSubagentFleetSteerResponse,
+      { method: "POST", body: { text } },
     ),
   createSession: (projectId: string) =>
     request("/api/v1/sessions", vSessionSummary, {

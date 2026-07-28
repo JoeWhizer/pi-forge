@@ -22,8 +22,8 @@
  * round-trip and are covered by tests/test-sse.ts under PI_TEST_LIVE_PROMPT=1).
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -106,6 +106,7 @@ async function main(): Promise<void> {
   const dataDir = await mkdtemp(join(tmpdir(), "pi-forge-data-"));
   const apiKey = "test-api-key-" + randomBytes(8).toString("hex");
   const port = await pickFreePort();
+  let fleetFixturePath: string | undefined;
 
   const child: ChildProcess = spawn(process.execPath, [serverEntry], {
     cwd: repoRoot,
@@ -202,6 +203,83 @@ async function main(): Promise<void> {
         "ui-config reports auth color scheme",
         uiBody.authColorScheme?.pageBackground === "#08111f" &&
           uiBody.authColorScheme.buttonHoverBackground === "#7dd3fc",
+      );
+    }
+
+    // Fleet steering uses pi-subagents' file channel, so test the REST
+    // contract against a real lifecycle fixture without a child agent.
+    {
+      const external = (await import(
+        resolve(repoRoot, "packages/server/dist/subagents-external.js")
+      )) as { SUBAGENTS_ASYNC_DIR: string };
+      const runRoot = `fleet-api-steer-${randomUUID()}`;
+      const runId = `fleet-api-run-${randomUUID()}`;
+      fleetFixturePath = join(external.SUBAGENTS_ASYNC_DIR, runRoot);
+      await mkdir(fleetFixturePath, { recursive: true });
+      await writeFile(
+        join(fleetFixturePath, "status.json"),
+        JSON.stringify({
+          runId,
+          state: "running",
+          mode: "single",
+          startedAt: Date.now(),
+          steps: [{ agent: "worker", status: "running" }],
+        }),
+        "utf8",
+      );
+
+      const accepted = await jsend(
+        "POST",
+        `${base}/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`,
+        { text: "Visible steer request" },
+        auth,
+      );
+      assert("POST Fleet steer for exact running run → 202", accepted.status === 202);
+      const acceptedBody = accepted.body as { requestId?: string; submittedAt?: number };
+      const fleet = await jget(`${base}/api/v1/subagent-fleet?refresh=1`, auth);
+      const fleetRun = (
+        fleet.body as {
+          runs?: {
+            runId?: string;
+            steering?: {
+              requestId?: string;
+              submittedAt?: number;
+              targets?: { state?: string }[];
+            }[];
+          }[];
+        }
+      ).runs?.find((run) => run.runId === runId);
+      const queued = fleetRun?.steering?.find(
+        (request) => request.requestId === acceptedBody.requestId,
+      );
+      assert(
+        "Fleet steer is visible as queued with its submitted timestamp",
+        typeof acceptedBody.submittedAt === "number" &&
+          queued?.submittedAt === acceptedBody.submittedAt &&
+          queued.targets?.[0]?.state === "queued",
+        JSON.stringify(fleetRun),
+      );
+
+      await writeFile(
+        join(fleetFixturePath, "status.json"),
+        JSON.stringify({
+          runId,
+          state: "complete",
+          steps: [{ agent: "worker", status: "complete" }],
+        }),
+        "utf8",
+      );
+      const terminal = await jsend(
+        "POST",
+        `${base}/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`,
+        { text: "Too late" },
+        auth,
+      );
+      assert(
+        "POST Fleet steer for terminal run → 409 actionable error",
+        terminal.status === 409 &&
+          (terminal.body as { error?: string }).error === "run_not_steerable",
+        JSON.stringify(terminal.body),
       );
     }
 
@@ -535,8 +613,14 @@ async function main(): Promise<void> {
     }
   } finally {
     await stop();
-    await rm(workspacePath, { recursive: true, force: true });
-    await rm(configDir, { recursive: true, force: true });
+    await Promise.all([
+      rm(workspacePath, { recursive: true, force: true }),
+      rm(configDir, { recursive: true, force: true }),
+      rm(dataDir, { recursive: true, force: true }),
+      ...(fleetFixturePath === undefined
+        ? []
+        : [rm(fleetFixturePath, { recursive: true, force: true })]),
+    ]);
   }
 
   if (failures > 0) {

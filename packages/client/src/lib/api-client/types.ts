@@ -411,6 +411,35 @@ export interface SubagentFleetChild {
   error?: string;
 }
 
+export type SubagentFleetSteeringState =
+  | "queued"
+  | "scheduled"
+  | "routed"
+  | "delivered"
+  | "late"
+  | "failed"
+  | "recovered";
+
+export interface SubagentFleetSteeringTarget {
+  index: number;
+  state: SubagentFleetSteeringState;
+  updatedAt?: number;
+  reason?: string;
+}
+
+export interface SubagentFleetSteeringRequest {
+  requestId: string;
+  submittedAt: number;
+  messagePreview: string;
+  targets: SubagentFleetSteeringTarget[];
+}
+
+export interface SubagentFleetSteerResponse {
+  accepted: true;
+  requestId: string;
+  submittedAt: number;
+}
+
 export interface SubagentFleetRun {
   runId: string;
   parentSessionId?: string;
@@ -422,6 +451,7 @@ export interface SubagentFleetRun {
   lastActivityAt?: number;
   durationMs?: number;
   error?: string;
+  steering: SubagentFleetSteeringRequest[];
   children: SubagentFleetChild[];
 }
 
