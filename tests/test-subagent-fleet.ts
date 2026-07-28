@@ -508,7 +508,12 @@ async function main(): Promise<void> {
         formatSubagentDuration(undefined, 1_000, 3_000) === "2s",
     );
     const oversizedRunId = "r".repeat(160);
-    const supervisorRequests: SubagentSupervisorRequest[] = [
+    const supervisorRequests: [
+      SubagentSupervisorRequest,
+      SubagentSupervisorRequest,
+      SubagentSupervisorRequest,
+      SubagentSupervisorRequest,
+    ] = [
       {
         requestId: "pending",
         parentSessionId,
@@ -562,6 +567,12 @@ async function main(): Promise<void> {
         status: "expired",
       },
     ];
+    const [
+      pendingSupervisorRequest,
+      approvedSupervisorRequest,
+      terminalSupervisorRequest,
+      expiredSupervisorRequest,
+    ] = supervisorRequests;
     const cleanedSupervisorRequests = filterCleanedSubagentSupervisorRequests(
       supervisorRequests,
       new Set(["approved", "terminal", "expired"]),
@@ -580,12 +591,12 @@ async function main(): Promise<void> {
     );
     assert(
       "Clean hides only completed supervisor requests and Reset can restore their local rows",
-      !isCleanableSubagentSupervisorRequest(supervisorRequests[0]) &&
-        !isCleanableSubagentSupervisorRequest(supervisorRequests[0], false) &&
-        isCleanableSubagentSupervisorRequest(supervisorRequests[0], true) &&
-        isCleanableSubagentSupervisorRequest(supervisorRequests[1]) &&
-        isCleanableSubagentSupervisorRequest(supervisorRequests[2]) &&
-        isCleanableSubagentSupervisorRequest(supervisorRequests[3]) &&
+      !isCleanableSubagentSupervisorRequest(pendingSupervisorRequest) &&
+        !isCleanableSubagentSupervisorRequest(pendingSupervisorRequest, false) &&
+        isCleanableSubagentSupervisorRequest(pendingSupervisorRequest, true) &&
+        isCleanableSubagentSupervisorRequest(approvedSupervisorRequest) &&
+        isCleanableSubagentSupervisorRequest(terminalSupervisorRequest) &&
+        isCleanableSubagentSupervisorRequest(expiredSupervisorRequest) &&
         cleanedSupervisorRequests.map((request) => request.requestId).join(",") === "pending" &&
         filterCleanedSubagentSupervisorRequests(supervisorRequests, new Set()).length ===
           supervisorRequests.length &&
