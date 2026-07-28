@@ -646,6 +646,10 @@ export type ExternalSubagentSteerResult =
   | { accepted: true; requestId: string; submittedAt: number }
   | { accepted: false; code: "run_not_found" | "run_not_steerable" | "run_stale"; message: string };
 
+export type ExternalSubagentStopResult =
+  | { accepted: true; requestedAt: number }
+  | { accepted: false; code: "run_not_found" | "run_not_stoppable" | "run_stale"; message: string };
+
 /**
  * Queue a steer using pi-subagents 0.37's file control protocol. A successful
  * result only confirms the request was atomically queued for its runner; the
@@ -732,6 +736,70 @@ export async function queueExternalSubagentSteer(
         accepted: false,
         code: "run_stale",
         message: `The control channel for run ${normalizedRunId} is unavailable. Refresh Fleet and verify the run is still active.`,
+      };
+    }
+  }
+  return {
+    accepted: false,
+    code: "run_not_found",
+    message: `Run ${normalizedRunId} was not found.`,
+  };
+}
+
+/**
+ * Request an irreversible stop using pi-subagents 0.37's file control protocol.
+ * Only an exact, currently running top-level async run is stoppable; an existing
+ * request is retained so concurrent callers cannot replace or duplicate it.
+ */
+export async function queueExternalSubagentStop(
+  runId: string,
+): Promise<ExternalSubagentStopResult> {
+  const normalizedRunId = runId.trim();
+  if (!normalizedRunId) {
+    return { accepted: false, code: "run_not_found", message: "The subagent run was not found." };
+  }
+
+  for (const root of await readStatusRoots()) {
+    const asyncDir = join(SUBAGENTS_ASYNC_DIR, root);
+    const status = await readJson<AsyncStatusFile>(join(asyncDir, "status.json"));
+    if ((stableRunId(status?.runId) ?? root) !== normalizedRunId) continue;
+    if (status?.state !== "running") {
+      return {
+        accepted: false,
+        code: "run_not_stoppable",
+        message: `Run ${normalizedRunId} is ${status?.state ?? "not active"}; only running runs can be stopped.`,
+      };
+    }
+
+    const requestedAt = Date.now();
+    const request = {
+      type: "stop",
+      ts: requestedAt,
+      source: "pi-forge",
+      reason: "Stopped from Fleet",
+    };
+    try {
+      await mkdir(join(asyncDir, "control"), { recursive: true });
+      // `wx` exclusively creates the singleton request. The runner consumes
+      // stop requests by their presence, so a second caller cannot overwrite it.
+      await writeFile(join(asyncDir, "control", "stop.json"), JSON.stringify(request), {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      return { accepted: true, requestedAt };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        return {
+          accepted: false,
+          code: "run_stale",
+          message: `A stop request is already pending for run ${normalizedRunId}. Refresh Fleet for its final status.`,
+        };
+      }
+      return {
+        accepted: false,
+        code: "run_stale",
+        message: `The control channel for run ${normalizedRunId} is unavailable. Refresh Fleet and verify the run is still running.`,
       };
     }
   }

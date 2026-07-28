@@ -440,6 +440,11 @@ export interface SubagentFleetSteerResponse {
   submittedAt: number;
 }
 
+export interface SubagentFleetStopResponse {
+  accepted: true;
+  requestedAt: number;
+}
+
 export interface SubagentFleetRun {
   runId: string;
   parentSessionId?: string;

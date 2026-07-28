@@ -8,9 +8,11 @@ import {
   filterCleanedSubagentFleetRuns,
   formatSubagentDuration,
   groupSubagentFleetRuns,
+  isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
   shouldExpandSubagentFleetRuns,
+  toggleSubagentFleetExpanded,
   truncateSubagentFleetRunId,
 } from "../packages/client/src/lib/subagent-fleet";
 import type { SubagentFleetRun } from "../packages/client/src/lib/api-client/types";
@@ -54,6 +56,11 @@ async function main(): Promise<void> {
     ) => Promise<
       | { accepted: true; requestId: string; submittedAt: number }
       | { accepted: false; code: string; message: string }
+    >;
+    queueExternalSubagentStop: (
+      runId: string,
+    ) => Promise<
+      { accepted: true; requestedAt: number } | { accepted: false; code: string; message: string }
     >;
     _hasExternalSubagentFleetRunCacheEntryForTests: (root: string) => boolean;
   };
@@ -291,6 +298,26 @@ async function main(): Promise<void> {
       JSON.stringify(terminalSteer),
     );
 
+    const stopRequest = await external.queueExternalSubagentStop(activeRunId);
+    const stopPath = join(external.SUBAGENTS_ASYNC_DIR, activeRoot, "control", "stop.json");
+    const persistedStop = JSON.parse(await readFile(stopPath, "utf8")) as {
+      type?: string;
+      source?: string;
+    };
+    const duplicateStop = await external.queueExternalSubagentStop(activeRunId);
+    const terminalStop = await external.queueExternalSubagentStop(failedRunId);
+    assert(
+      "Fleet atomically queues one stop request only for an exact running run",
+      stopRequest.accepted &&
+        persistedStop.type === "stop" &&
+        persistedStop.source === "pi-forge" &&
+        !duplicateStop.accepted &&
+        duplicateStop.code === "run_stale" &&
+        !terminalStop.accepted &&
+        terminalStop.code === "run_not_stoppable",
+      JSON.stringify({ stopRequest, duplicateStop, terminalStop }),
+    );
+
     const allRuns = await external.listExternalSubagentFleetRuns();
     const active = allRuns.find((run) => run.runId === activeRunId);
     const failed = allRuns.find((run) => run.runId === failedRunId);
@@ -362,14 +389,30 @@ async function main(): Promise<void> {
     );
     const oversizedRunId = "r".repeat(160);
     assert(
-      "Clean filters only selected Fleet rows and hierarchy defaults expand active work",
+      "Clean filters only selected Fleet rows and both hierarchy levels start collapsed",
       filterCleanedSubagentFleetRuns(allRuns, new Set([failedRunId, processFailedRunId])).every(
         (run) => run.runId !== failedRunId && run.runId !== processFailedRunId,
       ) &&
-        shouldExpandSubagentFleetRuns([active!]) &&
+        !shouldExpandSubagentFleetRuns([active!]) &&
         !shouldExpandSubagentFleetRuns([failed!]) &&
-        shouldExpandSubagentFleetRun(active!) &&
-        !shouldExpandSubagentFleetRun(failed!),
+        !shouldExpandSubagentFleetRun(active!) &&
+        !shouldExpandSubagentFleetRun(failed!) &&
+        isStoppableSubagentFleetRun(active!) &&
+        !isStoppableSubagentFleetRun(failed!),
+    );
+    const parentKey = `parent:${parentSessionId}`;
+    const expandedParent = toggleSubagentFleetExpanded({}, parentKey, false);
+    const expandedRun = toggleSubagentFleetExpanded({}, activeRunId, false);
+    // Polling replaces lifecycle rows but does not touch these explicit maps.
+    const collapsedParent = toggleSubagentFleetExpanded(expandedParent, parentKey, false);
+    const collapsedRun = toggleSubagentFleetExpanded(expandedRun, activeRunId, false);
+    assert(
+      "Fleet preserves explicit parent and run collapse toggles across polling updates",
+      expandedParent[parentKey] === true &&
+        expandedRun[activeRunId] === true &&
+        collapsedParent[parentKey] === false &&
+        collapsedRun[activeRunId] === false,
+      JSON.stringify({ expandedParent, expandedRun, collapsedParent, collapsedRun }),
     );
     assert(
       "child navigation waits for normal session discovery before it is enabled",

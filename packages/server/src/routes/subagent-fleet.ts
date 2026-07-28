@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import {
   listExternalSubagentFleetRuns,
   queueExternalSubagentSteer,
+  queueExternalSubagentStop,
 } from "../subagents-external.js";
 
 const lifecycleStateSchema = {
@@ -105,6 +106,51 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (req) => ({ runs: await listExternalSubagentFleetRuns(req.query.refresh !== undefined) }),
+  );
+
+  fastify.post<{ Params: { runId: string } }>(
+    "/subagent-fleet/:runId/stop",
+    {
+      schema: {
+        description:
+          "Request an irreversible stop for an exact running pi-subagents top-level async run.",
+        tags: ["sessions"],
+        params: {
+          type: "object",
+          required: ["runId"],
+          properties: { runId: { type: "string", minLength: 1, maxLength: 4096 } },
+        },
+        response: {
+          202: {
+            type: "object",
+            required: ["accepted", "requestedAt"],
+            properties: {
+              accepted: { const: true },
+              requestedAt: { type: "number", minimum: 0 },
+            },
+          },
+          404: {
+            type: "object",
+            required: ["error", "message"],
+            properties: { error: { const: "run_not_found" }, message: { type: "string" } },
+          },
+          409: {
+            type: "object",
+            required: ["error", "message"],
+            properties: {
+              error: { type: "string", enum: ["run_not_stoppable", "run_stale"] },
+              message: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const result = await queueExternalSubagentStop(req.params.runId);
+      if (result.accepted) return reply.code(202).send(result);
+      const status = result.code === "run_not_found" ? 404 : 409;
+      return reply.code(status).send({ error: result.code, message: result.message });
+    },
   );
 
   fastify.post<{ Params: { runId: string }; Body: { text: string } }>(

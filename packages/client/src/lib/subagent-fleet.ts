@@ -68,13 +68,27 @@ export function filterCleanedSubagentFleetRuns(
   return runs.filter((run) => !hiddenRunIds.has(run.runId));
 }
 
-/** Active work is expanded by default; historical terminal work stays compact. */
-export function shouldExpandSubagentFleetRuns(runs: readonly SubagentFleetRun[]): boolean {
-  return runs.some((run) => isActiveSubagentFleetState(run.state));
+/** Fleet starts compact at both hierarchy levels; explicit user toggles live in the store. */
+export function shouldExpandSubagentFleetRuns(_runs: readonly SubagentFleetRun[]): boolean {
+  return false;
 }
 
-export function shouldExpandSubagentFleetRun(run: SubagentFleetRun): boolean {
-  return isActiveSubagentFleetState(run.state);
+export function shouldExpandSubagentFleetRun(_run: SubagentFleetRun): boolean {
+  return false;
+}
+
+/** pi-subagents supports irreversible stop requests only for running async runs. */
+export function isStoppableSubagentFleetRun(run: SubagentFleetRun): boolean {
+  return run.state === "running";
+}
+
+/** Preserve explicit parent/run collapse choices while fleet polling replaces lifecycle rows. */
+export function toggleSubagentFleetExpanded(
+  expanded: Readonly<Record<string, boolean>>,
+  key: string,
+  defaultExpanded: boolean,
+): Record<string, boolean> {
+  return { ...expanded, [key]: !(expanded[key] ?? defaultExpanded) };
 }
 
 /** A lifecycle artifact is not navigable until normal session discovery resolves it. */

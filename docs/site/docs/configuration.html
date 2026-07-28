@@ -630,21 +630,53 @@ no extra config and renders the result as a rich card in the chat
 or render path).</p>
 <h3>pi-subagents lifecycle status</h3>
 <p>Pi Forge intercepts the pi-subagents <code>/subagents-fleet</code> command and opens a
-read-only browser panel instead. pi-subagents 0.37 registers that command for
+browser panel instead. pi-subagents 0.37 registers that command for
 its terminal fleet inspector, which requests an interactive custom dialog Pi
 Forge does not emulate. Forge reserves that command for its browser view while
 leaving all other pi-subagents extension commands unchanged. It reads pi-subagents
 lifecycle artifacts through an authenticated Forge API and groups runs by their
 stable <code>parentSessionId</code> and <code>runId</code>. Active and terminal runs remain visible
 with model, duration, and error details when the installed pi-subagents version
-records them. A child session can be opened through Forge&#39;s normal session
-navigation when the artifact contains a valid child session file.</p>
+records them. A non-zero child process exit code is projected as <code>failed</code>, even
+when the launcher status artifact says <code>complete</code>. A child session can be opened
+through Forge&#39;s normal session navigation only after normal session discovery
+finds it; until then Fleet shows a disabled “Waiting for session discovery”
+control rather than probing an unresolved id.</p>
+<p>Fleet reload bypasses its in-memory artifact projection cache and reports when
+new data arrived. Parent groups and their run rows are independently collapsible;
+both start collapsed, while explicit user toggles persist through polling and
+reloads. <strong>Clean</strong> hides only completed, failed, and stopped rows in the local
+Fleet view. <strong>Reset</strong> restores those rows; neither action deletes or changes
+sessions, artifacts, or server state.</p>
 <p>Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
-request is not reliable. When an externally observed run reports <code>paused</code>,
-Forge retains it as a non-spinning lifecycle status. Running, stopped,
-complete, and failed status indicators remain available. The fleet currently
-polls while open; artifacts with missing parent/child session metadata remain
-visible but cannot offer session navigation.</p>
+request is not reliable. A running top-level async run instead has a compact,
+confirmed <strong>Stop</strong> control in its header. Stop is irreversible and only queues
+one exact-run request; the control remains disabled while Fleet waits for the
+runner&#39;s final status. It is not shown for queued, paused, stopped, completed,
+or failed runs. When an externally observed run reports <code>paused</code>, Forge retains
+it as a non-spinning lifecycle status. The fleet currently polls while open;
+artifacts with missing parent/child session metadata remain visible but cannot
+offer session navigation.</p>
+<h3>Fleet live steering</h3>
+<p>A running Fleet row can receive a <strong>Send steer</strong> message. Forge accepts only an
+exact, currently running lifecycle <code>runId</code>; terminal runs, a closed control
+inbox, or a run with no running child return an actionable error instead of
+leaving a request in a stale artifact. The request is atomically written to the
+pi-subagents 0.37 <code>control/steer-requests</code> file channel and the Fleet refreshes
+immediately. Forge does not modify the installed pi-subagents extension.</p>
+<p>Each exact Fleet run exposes a recent steering ledger of its last 20 requests,
+with submission time and transport status. <strong>Queued for control channel</strong> means
+Forge persisted the request but the runner has not recorded receipt. <strong>Sent to child control inbox</strong>
+means the runner forwarded it to the child Pi process. <strong>Pi accepted input</strong> is
+a real pi-subagents correlated acknowledgement: the child extension received
+Pi&#39;s <code>input</code> event for that message. It confirms input acceptance only; it does
+not claim that the model processed, followed, or completed the guidance.</p>
+<p>Steering is non-interrupting. In particular, pi-subagents does not abort a
+running synchronous turn or tool such as <code>sleep</code>: Pi can accept queued steering
+only at its next yield/agent decision boundary, normally after the current tool
+returns. Therefore the delivery acknowledgement can legitimately remain queued
+or sent until that boundary; it is not evidence of a failed request. Forge never
+labels this delay as an interruption or as agent processing.</p>
 <h2>Docker bind mounts</h2>
 <p>The shipped <code>docker-compose.yml</code> mounts these paths by default:</p>
 <table>

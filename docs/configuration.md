@@ -359,7 +359,7 @@ or render path).
 ### pi-subagents lifecycle status
 
 Pi Forge intercepts the pi-subagents `/subagents-fleet` command and opens a
-read-only browser panel instead. pi-subagents 0.37 registers that command for
+browser panel instead. pi-subagents 0.37 registers that command for
 its terminal fleet inspector, which requests an interactive custom dialog Pi
 Forge does not emulate. Forge reserves that command for its browser view while
 leaving all other pi-subagents extension commands unchanged. It reads pi-subagents
@@ -373,17 +373,21 @@ finds it; until then Fleet shows a disabled “Waiting for session discovery”
 control rather than probing an unresolved id.
 
 Fleet reload bypasses its in-memory artifact projection cache and reports when
-new data arrived. Parent and run rows are collapsible (active work starts
-expanded; terminal history starts compact). **Clean** hides only completed,
-failed, and stopped rows in the local Fleet view. **Reset** restores those rows;
-neither action deletes or changes sessions, artifacts, or server state.
+new data arrived. Parent groups and their run rows are independently collapsible;
+both start collapsed, while explicit user toggles persist through polling and
+reloads. **Clean** hides only completed, failed, and stopped rows in the local
+Fleet view. **Reset** restores those rows; neither action deletes or changes
+sessions, artifacts, or server state.
 
 Pi Forge does not offer pause controls for pi-subagents 0.37 because its pause
-request is not reliable. When an externally observed run reports `paused`,
-Forge retains it as a non-spinning lifecycle status. Running, stopped,
-complete, and failed status indicators remain available. The fleet currently
-polls while open; artifacts with missing parent/child session metadata remain
-visible but cannot offer session navigation.
+request is not reliable. A running top-level async run instead has a compact,
+confirmed **Stop** control in its header. Stop is irreversible and only queues
+one exact-run request; the control remains disabled while Fleet waits for the
+runner's final status. It is not shown for queued, paused, stopped, completed,
+or failed runs. When an externally observed run reports `paused`, Forge retains
+it as a non-spinning lifecycle status. The fleet currently polls while open;
+artifacts with missing parent/child session metadata remain visible but cannot
+offer session navigation.
 
 ### Fleet live steering
 

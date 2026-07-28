@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api, ApiError, type SubagentFleetRun } from "../lib/api-client";
-import { isCleanableSubagentFleetState } from "../lib/subagent-fleet";
+import { isCleanableSubagentFleetState, toggleSubagentFleetExpanded } from "../lib/subagent-fleet";
 
 const POLL_INTERVAL_MS = 3_000;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -9,6 +9,7 @@ let loadGeneration = 0;
 interface SubagentFleetState {
   runs: SubagentFleetRun[];
   hiddenRunIds: string[];
+  stoppingRunIds: string[];
   expandedParents: Record<string, boolean>;
   expandedRuns: Record<string, boolean>;
   loading: boolean;
@@ -18,6 +19,7 @@ interface SubagentFleetState {
   load: (forceRefresh?: boolean) => Promise<void>;
   cleanTerminalRuns: () => void;
   resetCleanedRuns: () => void;
+  stopRun: (runId: string) => Promise<void>;
   toggleParentExpanded: (parentKey: string, defaultExpanded: boolean) => void;
   toggleRunExpanded: (runId: string, defaultExpanded: boolean) => void;
   startPolling: () => void;
@@ -27,6 +29,7 @@ interface SubagentFleetState {
 export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   runs: [],
   hiddenRunIds: [],
+  stoppingRunIds: [],
   expandedParents: {},
   expandedRuns: {},
   loading: false,
@@ -43,13 +46,16 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
     try {
       const { runs } = await api.listSubagentFleet(forceRefresh);
       if (generation !== loadGeneration) return;
-      set({
+      set((state) => ({
         runs,
+        stoppingRunIds: state.stoppingRunIds.filter((runId) =>
+          runs.some((run) => run.runId === runId && run.state === "running"),
+        ),
         loading: false,
         refreshing: false,
         lastRefreshedAt: Date.now(),
         error: undefined,
-      });
+      }));
     } catch (err) {
       if (generation !== loadGeneration) return;
       set({
@@ -72,20 +78,34 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
     }));
   },
   resetCleanedRuns: () => set({ hiddenRunIds: [] }),
+  stopRun: async (runId) => {
+    if (get().stoppingRunIds.includes(runId)) return;
+    set((state) => ({
+      stoppingRunIds: [...state.stoppingRunIds, runId],
+      error: undefined,
+    }));
+    try {
+      await api.stopSubagentFleetRun(runId);
+      await get().load(true);
+    } catch (err) {
+      set((state) => ({
+        stoppingRunIds: state.stoppingRunIds.filter((id) => id !== runId),
+        error: err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message,
+      }));
+    }
+  },
   toggleParentExpanded: (parentKey, defaultExpanded) => {
     set((state) => ({
-      expandedParents: {
-        ...state.expandedParents,
-        [parentKey]: !(state.expandedParents[parentKey] ?? defaultExpanded),
-      },
+      expandedParents: toggleSubagentFleetExpanded(
+        state.expandedParents,
+        parentKey,
+        defaultExpanded,
+      ),
     }));
   },
   toggleRunExpanded: (runId, defaultExpanded) => {
     set((state) => ({
-      expandedRuns: {
-        ...state.expandedRuns,
-        [runId]: !(state.expandedRuns[runId] ?? defaultExpanded),
-      },
+      expandedRuns: toggleSubagentFleetExpanded(state.expandedRuns, runId, defaultExpanded),
     }));
   },
   startPolling: () => {

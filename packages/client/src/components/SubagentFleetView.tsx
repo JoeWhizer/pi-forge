@@ -29,6 +29,7 @@ import {
   groupSubagentFleetRuns,
   isActiveSubagentFleetState,
   isCleanableSubagentFleetState,
+  isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
   shouldExpandSubagentFleetRuns,
@@ -37,7 +38,7 @@ import {
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
 import { useSubagentFleetStore } from "../store/subagent-fleet-store";
-import { Modal } from "./Modal";
+import { ConfirmDialog, Modal } from "./Modal";
 
 interface Props {
   onClose: () => void;
@@ -46,6 +47,7 @@ interface Props {
 export function SubagentFleetView({ onClose }: Props) {
   const runs = useSubagentFleetStore((state) => state.runs);
   const hiddenRunIds = useSubagentFleetStore((state) => state.hiddenRunIds);
+  const stoppingRunIds = useSubagentFleetStore((state) => state.stoppingRunIds);
   const expandedParents = useSubagentFleetStore((state) => state.expandedParents);
   const expandedRuns = useSubagentFleetStore((state) => state.expandedRuns);
   const loading = useSubagentFleetStore((state) => state.loading);
@@ -55,6 +57,7 @@ export function SubagentFleetView({ onClose }: Props) {
   const load = useSubagentFleetStore((state) => state.load);
   const cleanTerminalRuns = useSubagentFleetStore((state) => state.cleanTerminalRuns);
   const resetCleanedRuns = useSubagentFleetStore((state) => state.resetCleanedRuns);
+  const stopRun = useSubagentFleetStore((state) => state.stopRun);
   const toggleParentExpanded = useSubagentFleetStore((state) => state.toggleParentExpanded);
   const toggleRunExpanded = useSubagentFleetStore((state) => state.toggleRunExpanded);
   const startPolling = useSubagentFleetStore((state) => state.startPolling);
@@ -66,6 +69,7 @@ export function SubagentFleetView({ onClose }: Props) {
   const setActiveProject = useProjectStore((state) => state.setActive);
   const [openingSessionId, setOpeningSessionId] = useState<string | undefined>();
   const [openError, setOpenError] = useState<string | undefined>();
+  const [stopConfirmationRunId, setStopConfirmationRunId] = useState<string | undefined>();
   const navigationGuardRef = useRef(createSubagentFleetNavigationGuard());
   const navigationGuard = navigationGuardRef.current;
 
@@ -129,8 +133,8 @@ export function SubagentFleetView({ onClose }: Props) {
           second: "2-digit",
         }).format(lastRefreshedAt);
 
-  return (
-    <Modal open onClose={closeFleet} title="Subagent fleet" width="max-w-6xl">
+  return [
+    <Modal key="fleet" open onClose={closeFleet} title="Subagent fleet" width="max-w-6xl">
       <div className="flex max-h-[82vh] min-h-64 flex-col overflow-hidden">
         <header className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-4 py-2 text-xs text-neutral-400 light:border-neutral-200 light:text-neutral-600">
           <span>{activeCount} active</span>
@@ -264,46 +268,68 @@ export function SubagentFleetView({ onClose }: Props) {
                               key={run.runId}
                               className="rounded-md border border-neutral-800 bg-neutral-900/70 light:border-neutral-200 light:bg-white"
                             >
-                              <button
-                                type="button"
-                                onClick={() => toggleRunExpanded(run.runId, defaultRunExpanded)}
-                                aria-expanded={isRunExpanded}
-                                aria-label={
-                                  isRunExpanded
-                                    ? `Collapse run ${run.runId}`
-                                    : `Expand run ${run.runId}`
-                                }
-                                className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-xs hover:bg-neutral-800/50 light:hover:bg-neutral-50"
-                              >
-                                {isRunExpanded ? (
-                                  <ChevronDown size={14} />
-                                ) : (
-                                  <ChevronRight size={14} />
-                                )}
-                                <StatusBadge state={run.state} />
-                                <span
-                                  title={run.runId}
-                                  className="min-w-0 max-w-full break-all font-mono text-neutral-300 light:text-neutral-700"
+                              <div className="flex items-center hover:bg-neutral-800/50 light:hover:bg-neutral-50">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleRunExpanded(run.runId, defaultRunExpanded)}
+                                  aria-expanded={isRunExpanded}
+                                  aria-label={
+                                    isRunExpanded
+                                      ? `Collapse run ${run.runId}`
+                                      : `Expand run ${run.runId}`
+                                  }
+                                  className="flex min-w-0 flex-1 flex-wrap items-center gap-2 px-3 py-2 text-left text-xs"
                                 >
-                                  {truncateSubagentFleetRunId(run.runId)}
-                                </span>
-                                {run.mode !== undefined && (
-                                  <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] uppercase text-neutral-400 light:bg-neutral-100 light:text-neutral-600">
-                                    {run.mode}
+                                  {isRunExpanded ? (
+                                    <ChevronDown size={14} />
+                                  ) : (
+                                    <ChevronRight size={14} />
+                                  )}
+                                  <StatusBadge state={run.state} />
+                                  <span
+                                    title={run.runId}
+                                    className="min-w-0 max-w-full break-all font-mono text-neutral-300 light:text-neutral-700"
+                                  >
+                                    {truncateSubagentFleetRunId(run.runId)}
                                   </span>
+                                  {run.mode !== undefined && (
+                                    <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] uppercase text-neutral-400 light:bg-neutral-100 light:text-neutral-600">
+                                      {run.mode}
+                                    </span>
+                                  )}
+                                  <span className="flex-1" />
+                                  {run.model !== undefined && (
+                                    <span className="font-mono text-[11px] text-neutral-400">
+                                      {run.model}
+                                    </span>
+                                  )}
+                                  {duration !== undefined && (
+                                    <span className="flex items-center gap-1 text-neutral-500">
+                                      <Clock3 size={11} /> {duration}
+                                    </span>
+                                  )}
+                                </button>
+                                {isStoppableSubagentFleetRun(run) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setStopConfirmationRunId(run.runId)}
+                                    disabled={stoppingRunIds.includes(run.runId)}
+                                    aria-label={`Stop run ${run.runId}`}
+                                    title={
+                                      stoppingRunIds.includes(run.runId)
+                                        ? "Stop requested; waiting for the runner to finish"
+                                        : "Stop this running subagent"
+                                    }
+                                    className="mr-2 rounded p-1 text-red-300 hover:bg-red-950/60 hover:text-red-100 disabled:cursor-not-allowed disabled:opacity-50 light:text-red-700 light:hover:bg-red-100"
+                                  >
+                                    {stoppingRunIds.includes(run.runId) ? (
+                                      <Loader2 size={13} className="animate-spin" />
+                                    ) : (
+                                      <Square size={13} />
+                                    )}
+                                  </button>
                                 )}
-                                <span className="flex-1" />
-                                {run.model !== undefined && (
-                                  <span className="font-mono text-[11px] text-neutral-400">
-                                    {run.model}
-                                  </span>
-                                )}
-                                {duration !== undefined && (
-                                  <span className="flex items-center gap-1 text-neutral-500">
-                                    <Clock3 size={11} /> {duration}
-                                  </span>
-                                )}
-                              </button>
+                              </div>
                               {isRunExpanded && (
                                 <>
                                   {run.error !== undefined && (
@@ -353,8 +379,23 @@ export function SubagentFleetView({ onClose }: Props) {
           )}
         </div>
       </div>
-    </Modal>
-  );
+    </Modal>,
+    <ConfirmDialog
+      key="stop-confirmation"
+      open={stopConfirmationRunId !== undefined}
+      onClose={() => setStopConfirmationRunId(undefined)}
+      onConfirm={() => {
+        if (stopConfirmationRunId === undefined) return;
+        const runId = stopConfirmationRunId;
+        setStopConfirmationRunId(undefined);
+        void stopRun(runId);
+      }}
+      title="Stop subagent"
+      message="Stopping this running subagent is permanent. It cannot be resumed; start a new run if needed."
+      primaryLabel="Stop run"
+      tone="danger"
+    />,
+  ];
 }
 
 function formatSteeringTimestamp(timestamp: number): string {

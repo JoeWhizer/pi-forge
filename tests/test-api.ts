@@ -269,6 +269,18 @@ async function main(): Promise<void> {
         JSON.stringify(fleetRun),
       );
 
+      const stopUrl = `${base}/api/v1/subagent-fleet/${encodeURIComponent(runId)}/stop`;
+      const acceptedStop = await jsend("POST", stopUrl, {}, auth);
+      const duplicateStop = await jsend("POST", stopUrl, {}, auth);
+      assert(
+        "POST Fleet stop queues one exact running run → 202",
+        acceptedStop.status === 202 &&
+          typeof (acceptedStop.body as { requestedAt?: unknown }).requestedAt === "number" &&
+          duplicateStop.status === 409 &&
+          (duplicateStop.body as { error?: string }).error === "run_stale",
+        JSON.stringify({ acceptedStop: acceptedStop.body, duplicateStop: duplicateStop.body }),
+      );
+
       await writeFile(
         join(fleetFixturePath, "status.json"),
         JSON.stringify({
@@ -284,11 +296,18 @@ async function main(): Promise<void> {
         { text: "Too late" },
         auth,
       );
+      const terminalStop = await jsend("POST", stopUrl, {}, auth);
       assert(
         "POST Fleet steer for terminal run → 409 actionable error",
         terminal.status === 409 &&
           (terminal.body as { error?: string }).error === "run_not_steerable",
         JSON.stringify(terminal.body),
+      );
+      assert(
+        "POST Fleet stop for terminal run → 409 actionable error",
+        terminalStop.status === 409 &&
+          (terminalStop.body as { error?: string }).error === "run_not_stoppable",
+        JSON.stringify(terminalStop.body),
       );
     }
 

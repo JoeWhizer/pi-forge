@@ -39,6 +39,7 @@ import {
   type SubagentFleetSteeringState,
   type SubagentFleetSteeringTarget,
   type SubagentFleetSteerResponse,
+  type SubagentFleetStopResponse,
   type ExtensionCommandSummary,
   type SessionSummary,
   type PromptSummary,
@@ -571,6 +572,18 @@ function vSubagentFleetSteerResponse(value: unknown, status: number): SubagentFl
     fail(status, "expected accepted pi-subagents steer response");
   }
   return { accepted: true, requestId: value.requestId, submittedAt: value.submittedAt };
+}
+
+function vSubagentFleetStopResponse(value: unknown, status: number): SubagentFleetStopResponse {
+  if (
+    !isObject(value) ||
+    value.accepted !== true ||
+    typeof value.requestedAt !== "number" ||
+    !Number.isFinite(value.requestedAt)
+  ) {
+    fail(status, "expected accepted pi-subagents stop response");
+  }
+  return { accepted: true, requestedAt: value.requestedAt };
 }
 
 function vSessionSummary(value: unknown, status: number): SessionSummary {
@@ -2021,6 +2034,12 @@ export const api = {
       `/api/v1/subagent-fleet/${encodeURIComponent(runId)}/steer`,
       vSubagentFleetSteerResponse,
       { method: "POST", body: { text } },
+    ),
+  stopSubagentFleetRun: (runId: string) =>
+    request(
+      `/api/v1/subagent-fleet/${encodeURIComponent(runId)}/stop`,
+      vSubagentFleetStopResponse,
+      { method: "POST" },
     ),
   createSession: (projectId: string) =>
     request("/api/v1/sessions", vSessionSummary, {
