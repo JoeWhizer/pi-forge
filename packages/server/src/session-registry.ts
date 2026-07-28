@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   AgentSession,
@@ -1917,6 +1917,38 @@ async function discoverSubagentChildSessions(
         infos = await SessionManager.list(workspacePath, sd);
       } catch {
         continue;
+      }
+      // pi-subagents 0.37 writes parallel/chain children as a literal
+      // `session.jsonl`. The SDK's list() intentionally ignores that filename
+      // because it is not a normal timestamped top-level session file, so open
+      // the exact file as a bounded discovery fallback.
+      const literalPath = join(sd, "session.jsonl");
+      if (infos.length === 0) {
+        try {
+          const info = await stat(literalPath);
+          if (info.isFile()) {
+            const manager = SessionManager.open(literalPath, sd, workspacePath);
+            const header = manager.getHeader();
+            if (header !== null) {
+              const entries = manager.getEntries();
+              const literalInfo: SessionInfo = {
+                id: manager.getSessionId(),
+                path: literalPath,
+                cwd: manager.getCwd(),
+                created: new Date(header.timestamp),
+                modified: info.mtime,
+                messageCount: entries.length,
+                firstMessage: "",
+                allMessagesText: "",
+              };
+              const name = manager.getSessionName();
+              if (name !== undefined) literalInfo.name = name;
+              infos = [literalInfo];
+            }
+          }
+        } catch {
+          // A partially-written or malformed child must not block discovery.
+        }
       }
       // Reconstruct runId from path segments between parentDir and sd.
       // Single segment → that's the runId. Multiple segments

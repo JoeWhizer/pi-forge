@@ -863,7 +863,39 @@ async function main(): Promise<void> {
       `got runId=${deepChildEntry?.runId}`,
     );
 
-    // 8b. FLAT layout (no runId subdir): some pi-subagents run modes
+    // 8b. Literal child filename: pi-subagents 0.37 writes parallel/chain
+    // children as `session.jsonl`, which the SDK's SessionManager.list()
+    // deliberately ignores because it is not a timestamped top-level file.
+    const literalParentId = "literal-parent-" + randomUUID().slice(0, 6);
+    const literalBasename = "2026-05-07T14-30-00-000Z_" + literalParentId;
+    await writeChildSessionFile(
+      join(projectSessionDir, `${literalBasename}.jsonl`),
+      literalParentId,
+      project.path,
+    );
+    const literalRunId = randomUUID().slice(0, 8);
+    const literalChildId = randomUUID();
+    await writeChildSessionFile(
+      join(projectSessionDir, literalBasename, literalRunId, "run-0", "session.jsonl"),
+      literalChildId,
+      project.path,
+    );
+    const reLiteral = await registry.discoverSessionsOnDisk(project.id, project.path);
+    const literalChildEntry = reLiteral.find((d) => d.sessionId === literalChildId);
+    assert(
+      "literal session.jsonl child is discovered",
+      literalChildEntry !== undefined,
+      `child id=${literalChildId} not in ${reLiteral.map((d) => d.sessionId).join(",")}`,
+    );
+    assert(
+      "literal session.jsonl child preserves parent and run identity",
+      literalChildEntry?.parentSessionId === literalParentId &&
+        (literalChildEntry.runId === `${literalRunId}/run-0` ||
+          literalChildEntry.runId === `${literalRunId}\\run-0`),
+      `parentSessionId=${literalChildEntry?.parentSessionId} runId=${literalChildEntry?.runId}`,
+    );
+
+    // 8c. FLAT layout (no runId subdir): some pi-subagents run modes
     // write children directly under <parentBasename>/, not under
     // <parentBasename>/<runId>/. Discovery must surface these too.
     const flatParentId = "flat-parent-" + randomUUID().slice(0, 6);
