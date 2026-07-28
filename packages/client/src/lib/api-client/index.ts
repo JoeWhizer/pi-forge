@@ -449,7 +449,7 @@ function vSubagentSupervisorReason(
   value: unknown,
   status: number,
 ): SubagentSupervisorRequestReason {
-  if (value !== "need_decision" && value !== "interview_request" && value !== "progress_update") {
+  if (value !== "need_decision" && value !== "interview_request") {
     fail(status, "expected pi-subagents supervisor request reason");
   }
   return value;

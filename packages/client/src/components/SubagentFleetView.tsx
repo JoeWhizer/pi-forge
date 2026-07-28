@@ -82,8 +82,11 @@ export function SubagentFleetView({ onClose }: Props) {
   );
   const stopConfirmationCancelRef = useRef<HTMLButtonElement>(null);
   const stopConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
+  const declineConfirmationCancelRef = useRef<HTMLButtonElement>(null);
+  const declineConfirmationTriggerRef = useRef<HTMLButtonElement>(null);
   const fleetContentRef = useRef<HTMLDivElement>(null);
   const stopConfirmationDismissalRef = useRef<"cancel" | "confirm" | undefined>(undefined);
+  const declineConfirmationDismissalRef = useRef<"cancel" | "confirm" | undefined>(undefined);
   const navigationGuardRef = useRef(createSubagentFleetNavigationGuard());
   const navigationGuard = navigationGuardRef.current;
 
@@ -95,14 +98,23 @@ export function SubagentFleetView({ onClose }: Props) {
   useEffect(() => () => navigationGuard.invalidate(), [navigationGuard]);
 
   useEffect(() => {
-    if (stopConfirmationRunId !== undefined || declineConfirmationRequest !== undefined) {
+    if (stopConfirmationRunId !== undefined) {
       stopConfirmationCancelRef.current?.focus();
       return;
     }
-    const dismissal = stopConfirmationDismissalRef.current;
+    if (declineConfirmationRequest !== undefined) {
+      declineConfirmationCancelRef.current?.focus();
+      return;
+    }
+    const dismissal =
+      stopConfirmationDismissalRef.current ?? declineConfirmationDismissalRef.current;
     if (dismissal === undefined) return;
+    const trigger =
+      stopConfirmationDismissalRef.current !== undefined
+        ? stopConfirmationTriggerRef.current
+        : declineConfirmationTriggerRef.current;
     stopConfirmationDismissalRef.current = undefined;
-    const trigger = stopConfirmationTriggerRef.current;
+    declineConfirmationDismissalRef.current = undefined;
     if (
       dismissal === "cancel" &&
       trigger !== null &&
@@ -165,6 +177,7 @@ export function SubagentFleetView({ onClose }: Props) {
       return;
     }
     if (declineConfirmationRequest !== undefined) {
+      declineConfirmationDismissalRef.current = "cancel";
       setDeclineConfirmationRequestId(undefined);
       return;
     }
@@ -173,6 +186,7 @@ export function SubagentFleetView({ onClose }: Props) {
 
   const confirmDecline = (): void => {
     const request = declineConfirmationRequest;
+    declineConfirmationDismissalRef.current = "confirm";
     setDeclineConfirmationRequestId(undefined);
     if (request === undefined) return;
     void api.declineSubagentSupervisorRequest(request.requestId).then(
@@ -258,7 +272,11 @@ export function SubagentFleetView({ onClose }: Props) {
           <footer className="flex justify-end gap-2 pt-1">
             <button
               type="button"
-              onClick={() => setDeclineConfirmationRequestId(undefined)}
+              ref={declineConfirmationCancelRef}
+              onClick={() => {
+                declineConfirmationDismissalRef.current = "cancel";
+                setDeclineConfirmationRequestId(undefined);
+              }}
               className="rounded-md border border-neutral-700 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
             >
               Keep open
@@ -344,7 +362,10 @@ export function SubagentFleetView({ onClose }: Props) {
           <SupervisorRequests
             requests={supervisorRequests}
             onSubmitted={() => load(true)}
-            onDecline={(requestId) => setDeclineConfirmationRequestId(requestId)}
+            onDecline={(requestId, trigger) => {
+              declineConfirmationTriggerRef.current = trigger;
+              setDeclineConfirmationRequestId(requestId);
+            }}
           />
           {loading && visibleRuns.length === 0 ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-neutral-500">
@@ -633,7 +654,7 @@ function SupervisorRequests({
 }: {
   requests: SubagentSupervisorRequest[];
   onSubmitted: () => Promise<void>;
-  onDecline: (requestId: string) => void;
+  onDecline: (requestId: string, trigger: HTMLButtonElement) => void;
 }) {
   if (requests.length === 0) return null;
   return (
@@ -658,6 +679,8 @@ function SupervisorRequests({
   );
 }
 
+const MAX_SUPERVISOR_REPLY_BYTES = 64 * 1024;
+
 function SupervisorRequestRow({
   request,
   onSubmitted,
@@ -665,18 +688,26 @@ function SupervisorRequestRow({
 }: {
   request: SubagentSupervisorRequest;
   onSubmitted: () => Promise<void>;
-  onDecline: (requestId: string) => void;
+  onDecline: (requestId: string, trigger: HTMLButtonElement) => void;
 }) {
   const [answer, setAnswer] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const canReply = request.status === "open" && request.expectsReply;
   const submit = async (): Promise<void> => {
-    if (!canReply || sending || !answer.trim()) return;
+    const normalized = answer.trim();
+    if (!canReply || sending) return;
+    if (
+      !normalized ||
+      new TextEncoder().encode(normalized).byteLength > MAX_SUPERVISOR_REPLY_BYTES
+    ) {
+      setError("A supervisor reply must contain non-whitespace text of at most 64 KiB.");
+      return;
+    }
     setSending(true);
     setError(undefined);
     try {
-      await api.replySubagentSupervisorRequest(request.requestId, answer.trim());
+      await api.replySubagentSupervisorRequest(request.requestId, normalized);
       setAnswer("");
       await onSubmitted();
     } catch (err) {
@@ -723,18 +754,22 @@ function SupervisorRequestRow({
       </dl>
       {canReply && (
         <div className="mt-3">
+          <label htmlFor={`supervisor-reply-${request.requestId}`} className="sr-only">
+            Reply to supervisor request {request.requestId}
+          </label>
           <textarea
+            id={`supervisor-reply-${request.requestId}`}
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
             rows={3}
-            maxLength={65536}
+            maxLength={MAX_SUPERVISOR_REPLY_BYTES}
             placeholder="Reply to this exact supervisor request"
             className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 placeholder:text-neutral-600 light:border-neutral-300 light:bg-white light:text-neutral-900"
           />
           <div className="mt-2 flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => onDecline(request.requestId)}
+              onClick={(event) => onDecline(request.requestId, event.currentTarget)}
               disabled={sending}
               className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-200 hover:bg-red-950/60 disabled:opacity-50 light:border-red-300 light:text-red-800"
             >
@@ -743,7 +778,11 @@ function SupervisorRequestRow({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={sending || answer.trim().length === 0}
+              disabled={
+                sending ||
+                answer.trim().length === 0 ||
+                new TextEncoder().encode(answer.trim()).byteLength > MAX_SUPERVISOR_REPLY_BYTES
+              }
               className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
             >
               <Send size={11} />
@@ -753,7 +792,11 @@ function SupervisorRequestRow({
         </div>
       )}
       {error !== undefined && (
-        <div className="mt-2 rounded border border-red-800/60 bg-red-950/30 px-2 py-1.5 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800">
+        <div
+          role="alert"
+          aria-live="polite"
+          className="mt-2 rounded border border-red-800/60 bg-red-950/30 px-2 py-1.5 text-xs text-red-300 light:border-red-300 light:bg-red-50 light:text-red-800"
+        >
           {error}
         </div>
       )}

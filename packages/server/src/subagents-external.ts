@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { constants as fsConstants, existsSync, watch, type FSWatcher } from "node:fs";
 import {
   link,
   lstat,
@@ -209,10 +209,7 @@ export const SUBAGENTS_ASYNC_DIR = join(SUBAGENTS_TEMP_ROOT, "async-subagent-run
 export const SUBAGENTS_SUPERVISOR_CHANNEL_DIR = join(SUBAGENTS_TEMP_ROOT, "supervisor-channels");
 
 export type ExternalSupervisorRequestStatus = "open" | "answered" | "cancelled" | "expired";
-export type ExternalSupervisorRequestReason =
-  | "need_decision"
-  | "interview_request"
-  | "progress_update";
+export type ExternalSupervisorRequestReason = "need_decision" | "interview_request";
 
 /** A sanitized, correlated projection of pi-subagents' native supervisor channel. */
 export interface ExternalSupervisorRequest {
@@ -259,16 +256,20 @@ interface SupervisorRequestRecord extends ExternalSupervisorRequest {
 
 const SUPERVISOR_HISTORY_PATH = join(config.forgeDataDir, "subagent-supervisor-requests.json");
 const MAX_SUPERVISOR_HISTORY = 500;
+const MAX_SUPERVISOR_ARTIFACT_BYTES = 64 * 1024;
+const MAX_SUPERVISOR_ARTIFACTS = 500;
+const MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES = 8 * 1024;
+const MAX_PERSISTED_SUPERVISOR_INTERVIEW_BYTES = 16 * 1024;
 const supervisorRequestLock = makeLock();
 
 function isSafeSupervisorId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9._-]{1,256}$/.test(value);
 }
 
-function safeSupervisorString(value: unknown, maxLength: number): string | undefined {
+function safeSupervisorString(value: unknown, maxBytes: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
-  if (!trimmed || Buffer.byteLength(trimmed, "utf8") > maxLength) return undefined;
+  if (!trimmed || Buffer.byteLength(trimmed, "utf8") > maxBytes) return undefined;
   return trimmed;
 }
 
@@ -281,54 +282,102 @@ function withinSupervisorRoot(path: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !rel.includes("\\");
 }
 
-function parseSupervisorRequest(
-  file: string,
-  channelDir: string,
-): SupervisorRequestRecord | undefined {
-  if (!withinSupervisorRoot(channelDir)) return undefined;
+function supervisorChannelSegment(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "unknown"
+  );
+}
+
+function expectedSupervisorChannelName(runId: string, agent: string, childIndex: number): string {
+  return `${supervisorChannelSegment(runId)}-${supervisorChannelSegment(agent)}-${childIndex}`;
+}
+
+function safeInterview(value: unknown): unknown | undefined {
+  if (value === undefined) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as SupervisorRequestFile;
-    const requestId = isSafeSupervisorId(parsed.id) ? parsed.id : undefined;
-    const parentSessionId = safeSupervisorString(parsed.orchestratorSessionId, 256);
-    const runId = safeSupervisorString(parsed.runId, 4096);
-    const agent = safeSupervisorString(parsed.agent, 256);
-    const message = safeSupervisorString(parsed.message, 64 * 1024);
-    const createdAt = finiteTimestamp(parsed.createdAt);
-    const reason = parsed.reason;
+    const serialized = JSON.stringify(value);
     if (
-      requestId === undefined ||
-      parentSessionId === undefined ||
-      runId === undefined ||
-      agent === undefined ||
-      message === undefined ||
-      createdAt === undefined ||
-      typeof parsed.childIndex !== "number" ||
-      !Number.isInteger(parsed.childIndex) ||
-      (reason !== "need_decision" &&
-        reason !== "interview_request" &&
-        reason !== "progress_update") ||
-      typeof parsed.expectsReply !== "boolean"
+      serialized === undefined ||
+      Buffer.byteLength(serialized, "utf8") > MAX_PERSISTED_SUPERVISOR_INTERVIEW_BYTES
     )
       return undefined;
-    const expiresAt = finiteTimestamp(parsed.expiresAt);
-    return {
-      requestId,
-      parentSessionId,
-      runId,
-      agent,
-      childIndex: parsed.childIndex,
-      reason,
-      expectsReply: parsed.expectsReply,
-      createdAt,
-      ...(expiresAt === undefined ? {} : { expiresAt }),
-      message,
-      ...(parsed.interview === undefined ? {} : { interview: parsed.interview }),
-      status: "open",
-      channelDir,
-    };
+    return JSON.parse(serialized) as unknown;
   } catch {
     return undefined;
   }
+}
+
+async function readBoundedJson<T>(path: string): Promise<T | undefined> {
+  try {
+    const pathInfo = await lstat(path);
+    if (!pathInfo.isFile() || pathInfo.isSymbolicLink()) return undefined;
+    const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > MAX_SUPERVISOR_ARTIFACT_BYTES) return undefined;
+      const buffer = Buffer.allocUnsafe(info.size);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      return JSON.parse(buffer.toString("utf8", 0, bytesRead)) as T;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function parseSupervisorRequest(
+  parsed: SupervisorRequestFile,
+  filename: string,
+  channelDir: string,
+): SupervisorRequestRecord | undefined {
+  if (!withinSupervisorRoot(channelDir) || parsed.type !== "subagent.supervisor.request")
+    return undefined;
+  const requestId = isSafeSupervisorId(parsed.id) ? parsed.id : undefined;
+  const parentSessionId = safeSupervisorString(parsed.orchestratorSessionId, 256);
+  const runId = safeSupervisorString(parsed.runId, 4096);
+  const agent = safeSupervisorString(parsed.agent, 256);
+  const message = safeSupervisorString(parsed.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES);
+  const createdAt = finiteTimestamp(parsed.createdAt);
+  const reason = parsed.reason;
+  const childIndex = parsed.childIndex;
+  if (
+    requestId === undefined ||
+    parentSessionId === undefined ||
+    runId === undefined ||
+    agent === undefined ||
+    message === undefined ||
+    createdAt === undefined ||
+    typeof childIndex !== "number" ||
+    !Number.isInteger(childIndex) ||
+    childIndex < 0 ||
+    filename !== `${requestId}.json` ||
+    expectedSupervisorChannelName(runId, agent, childIndex) !== channelDir.split(/[/\\]/).at(-1) ||
+    (reason !== "need_decision" && reason !== "interview_request") ||
+    parsed.expectsReply !== true
+  )
+    return undefined;
+  const expiresAt = finiteTimestamp(parsed.expiresAt);
+  if (expiresAt === undefined || expiresAt < createdAt) return undefined;
+  const interview = safeInterview(parsed.interview);
+  return {
+    requestId,
+    parentSessionId,
+    runId,
+    agent,
+    childIndex,
+    reason,
+    expectsReply: true,
+    createdAt,
+    expiresAt,
+    message,
+    ...(interview === undefined ? {} : { interview }),
+    status: "open",
+    channelDir,
+  };
 }
 
 async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
@@ -338,69 +387,63 @@ async function readSupervisorRequests(): Promise<SupervisorRequestRecord[]> {
   } catch {
     return [];
   }
-  const entries = await Promise.all(
-    channels
-      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-      .map(async (entry) => {
-        const channelDir = join(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, entry.name);
-        let files: import("node:fs").Dirent[];
-        try {
-          files = await readdir(join(channelDir, "requests"), { withFileTypes: true });
-        } catch {
-          return [] as SupervisorRequestRecord[];
-        }
-        return (
-          await Promise.all(
-            files
-              .filter(
-                (file) => file.isFile() && !file.isSymbolicLink() && file.name.endsWith(".json"),
-              )
-              .map((entry) =>
-                readFile(join(channelDir, "requests", entry.name), "utf8")
-                  .then(() =>
-                    parseSupervisorRequest(join(channelDir, "requests", entry.name), channelDir),
-                  )
-                  .catch(() => undefined),
-              ),
-          )
-        ).filter((request): request is SupervisorRequestRecord => request !== undefined);
-      }),
-  );
-  const requests = entries.flat();
-  const counts = new Map<string, number>();
-  for (const request of requests) {
-    counts.set(request.requestId, (counts.get(request.requestId) ?? 0) + 1);
+  const requests: SupervisorRequestRecord[] = [];
+  for (const channel of channels.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (requests.length >= MAX_SUPERVISOR_ARTIFACTS) break;
+    if (!channel.isDirectory() || channel.isSymbolicLink()) continue;
+    const channelDir = join(SUBAGENTS_SUPERVISOR_CHANNEL_DIR, channel.name);
+    if (!withinSupervisorRoot(channelDir)) continue;
+    let files: import("node:fs").Dirent[];
+    try {
+      files = await readdir(join(channelDir, "requests"), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (requests.length >= MAX_SUPERVISOR_ARTIFACTS) break;
+      if (!file.isFile() || file.isSymbolicLink() || !file.name.endsWith(".json")) continue;
+      const parsed = await readBoundedJson<SupervisorRequestFile>(
+        join(channelDir, "requests", file.name),
+      );
+      if (parsed === undefined) continue;
+      const request = parseSupervisorRequest(parsed, file.name, channelDir);
+      if (request !== undefined) requests.push(request);
+    }
   }
-  // A request id must identify exactly one channel. Treat duplicate files as
-  // malformed rather than risking a reply being routed to the wrong child.
+  const counts = new Map<string, number>();
+  for (const request of requests)
+    counts.set(request.requestId, (counts.get(request.requestId) ?? 0) + 1);
+  // A request id must identify exactly one channel. Treat duplicates as malformed.
   return requests.filter((request) => counts.get(request.requestId) === 1);
+}
+
+function isPersistedSupervisorRequest(request: unknown): request is ExternalSupervisorRequest {
+  if (!request || typeof request !== "object") return false;
+  const value = request as Partial<ExternalSupervisorRequest>;
+  return (
+    isSafeSupervisorId(value.requestId) &&
+    safeSupervisorString(value.parentSessionId, 256) !== undefined &&
+    safeSupervisorString(value.runId, 4096) !== undefined &&
+    safeSupervisorString(value.agent, 256) !== undefined &&
+    typeof value.childIndex === "number" &&
+    Number.isInteger(value.childIndex) &&
+    value.childIndex >= 0 &&
+    (value.reason === "need_decision" || value.reason === "interview_request") &&
+    value.expectsReply === true &&
+    finiteTimestamp(value.createdAt) !== undefined &&
+    finiteTimestamp(value.expiresAt) !== undefined &&
+    safeSupervisorString(value.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES) !== undefined &&
+    (value.status === "open" ||
+      value.status === "answered" ||
+      value.status === "cancelled" ||
+      value.status === "expired")
+  );
 }
 
 async function readSupervisorHistory(): Promise<ExternalSupervisorRequest[]> {
   const parsed = await readJson<{ requests?: unknown }>(SUPERVISOR_HISTORY_PATH);
   if (!Array.isArray(parsed?.requests)) return [];
-  return parsed.requests.filter((request): request is ExternalSupervisorRequest => {
-    if (!request || typeof request !== "object") return false;
-    const value = request as Partial<ExternalSupervisorRequest>;
-    return (
-      isSafeSupervisorId(value.requestId) &&
-      typeof value.parentSessionId === "string" &&
-      typeof value.runId === "string" &&
-      typeof value.agent === "string" &&
-      typeof value.childIndex === "number" &&
-      Number.isInteger(value.childIndex) &&
-      (value.reason === "need_decision" ||
-        value.reason === "interview_request" ||
-        value.reason === "progress_update") &&
-      typeof value.expectsReply === "boolean" &&
-      typeof value.createdAt === "number" &&
-      typeof value.message === "string" &&
-      (value.status === "open" ||
-        value.status === "answered" ||
-        value.status === "cancelled" ||
-        value.status === "expired")
-    );
-  });
+  return parsed.requests.filter(isPersistedSupervisorRequest).slice(0, MAX_SUPERVISOR_HISTORY);
 }
 
 async function writeSupervisorHistory(requests: ExternalSupervisorRequest[]): Promise<void> {
@@ -414,29 +457,49 @@ async function writeSupervisorHistory(requests: ExternalSupervisorRequest[]): Pr
   await rename(temporary, SUPERVISOR_HISTORY_PATH);
 }
 
-function replyFileFor(request: SupervisorRequestRecord): string {
-  return join(request.channelDir, "replies", `${request.requestId}.json`);
+function channelDirFor(request: ExternalSupervisorRequest): string {
+  return join(
+    SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
+    expectedSupervisorChannelName(request.runId, request.agent, request.childIndex),
+  );
+}
+
+function replyFileFor(request: ExternalSupervisorRequest): string {
+  return join(channelDirFor(request), "replies", `${request.requestId}.json`);
 }
 
 async function readSupervisorReply(
   path: string,
   requestId: string,
 ): Promise<SupervisorReplyFile | undefined> {
-  const parsed = await readJson<SupervisorReplyFile>(path);
+  const parsed = await readBoundedJson<SupervisorReplyFile>(path);
   return parsed?.type === "subagent.supervisor.reply" &&
     parsed.requestId === requestId &&
-    typeof parsed.message === "string"
+    finiteTimestamp(parsed.createdAt) !== undefined &&
+    safeSupervisorString(parsed.message, MAX_SUPERVISOR_ARTIFACT_BYTES) !== undefined
     ? parsed
     : undefined;
 }
 
 function supervisorStatus(
-  request: SupervisorRequestRecord,
+  request: ExternalSupervisorRequest,
   reply: SupervisorReplyFile | undefined,
   now: number,
 ): ExternalSupervisorRequestStatus {
   if (reply !== undefined) return "answered";
   return request.expiresAt !== undefined && now > request.expiresAt ? "expired" : "open";
+}
+
+function supervisorHistoryTimestamp(request: ExternalSupervisorRequest): number {
+  return request.repliedAt ?? request.createdAt;
+}
+
+function sortSupervisorHistory(requests: ExternalSupervisorRequest[]): ExternalSupervisorRequest[] {
+  return requests.sort(
+    (a, b) =>
+      supervisorHistoryTimestamp(b) - supervisorHistoryTimestamp(a) ||
+      a.requestId.localeCompare(b.requestId),
+  );
 }
 
 function publicSupervisorRequest(
@@ -454,14 +517,25 @@ export type ExternalSupervisorReplyResult =
         | "request_not_found"
         | "request_not_open"
         | "request_expired"
-        | "request_already_answered";
+        | "request_already_answered"
+        | "invalid_reply";
       message: string;
     };
 
+export const MAX_SUPERVISOR_REPLY_BYTES = 64 * 1024;
+
+export function normalizeExternalSupervisorReply(message: unknown): string | undefined {
+  if (typeof message !== "string") return undefined;
+  const normalized = message.trim();
+  return normalized && Buffer.byteLength(normalized, "utf8") <= MAX_SUPERVISOR_REPLY_BYTES
+    ? normalized
+    : undefined;
+}
+
 /**
  * List and durably project requests from pi-subagents 0.37's native channel.
- * Only requests with the exact orchestrator session, run, and request id are
- * exposed; malformed or cross-channel files are ignored.
+ * Only reply-bearing requests are supported: progress updates can be removed
+ * by pi-subagents before a bounded Forge poll can observe them.
  */
 export async function listExternalSupervisorRequests(): Promise<ExternalSupervisorRequest[]> {
   return supervisorRequestLock(async () => {
@@ -469,8 +543,8 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
     const history = await readSupervisorHistory();
     const byId = new Map(history.map((request) => [request.requestId, request]));
     const live = await readSupervisorRequests();
+    const liveIds = new Set(live.map((request) => request.requestId));
     for (const request of live) {
-      if (!request.expectsReply) continue;
       const reply = await readSupervisorReply(replyFileFor(request), request.requestId);
       const prior = byId.get(request.requestId);
       const status =
@@ -486,21 +560,37 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
             : { repliedAt: prior.repliedAt }),
       });
     }
-    const projected = [...byId.values()]
-      .filter(
-        (request) =>
-          request.status !== "open" ||
-          live.some((liveRequest) => liveRequest.requestId === request.requestId),
-      )
-      .sort((a, b) => b.createdAt - a.createdAt || a.requestId.localeCompare(b.requestId));
+    // The native client deletes a request as soon as it receives a terminal
+    // reply. Re-check prior open records by their deterministic channel path
+    // before discarding them so terminal replies remain visible as answered.
+    for (const prior of byId.values()) {
+      if (liveIds.has(prior.requestId) || prior.status !== "open") continue;
+      const reply = await readSupervisorReply(replyFileFor(prior), prior.requestId);
+      if (reply !== undefined) {
+        const repliedAt = finiteTimestamp(reply.createdAt);
+        byId.set(prior.requestId, {
+          ...prior,
+          status: "answered",
+          ...(repliedAt === undefined ? {} : { repliedAt }),
+        });
+      } else if (prior.expiresAt !== undefined && now > prior.expiresAt) {
+        byId.set(prior.requestId, { ...prior, status: "expired" });
+      }
+    }
+    const projected = [...byId.values()].filter(
+      (request) => request.status !== "open" || liveIds.has(request.requestId),
+    );
+    sortSupervisorHistory(projected);
     await writeSupervisorHistory(projected);
-    return projected.map(publicSupervisorRequest);
+    return projected;
   });
 }
 
 /**
- * Atomically reply to one exact native request. `link()` makes a concurrent
- * browser/terminal reply fail rather than replacing the first reply file.
+ * Atomically reply to one exact native request. `link()` prevents concurrent
+ * Forge writers from replacing each other. pi-subagents 0.37 terminal replies
+ * use overwrite-capable rename, so global browser/terminal first-writer
+ * semantics require an upstream no-clobber protocol change.
  */
 export async function replyExternalSupervisorRequest(
   requestId: string,
@@ -515,12 +605,12 @@ export async function replyExternalSupervisorRequest(
         message: "The supervisor request was not found.",
       };
     }
-    const normalized = message.trim();
-    if (!normalized || Buffer.byteLength(normalized, "utf8") > 64 * 1024) {
+    const normalized = normalizeExternalSupervisorReply(message);
+    if (normalized === undefined) {
       return {
         accepted: false,
-        code: "request_not_open",
-        message: "A supervisor reply must contain at most 64 KiB of text.",
+        code: "invalid_reply",
+        message: "A supervisor reply must contain non-whitespace text of at most 64 KiB.",
       };
     }
     const request = (await readSupervisorRequests()).find(
@@ -593,8 +683,10 @@ export async function replyExternalSupervisorRequest(
       repliedAt,
     };
     const retained = history.filter((record) => record.requestId !== requestId);
-    retained.push(projected);
-    await writeSupervisorHistory(retained);
+    // Keep newest-first before the fixed-cap writer so a just-accepted reply
+    // cannot be evicted when history is already full.
+    retained.unshift(projected);
+    await writeSupervisorHistory(sortSupervisorHistory(retained));
     return { accepted: true, status, repliedAt };
   });
 }

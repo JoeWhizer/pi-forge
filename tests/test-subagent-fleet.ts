@@ -59,6 +59,36 @@ async function main(): Promise<void> {
       !fleetViewSource.includes("pause supervisor"),
   );
   assert(
+    "Supervisor reply UI validates byte limits and restores accessible decline focus",
+    fleetViewSource.includes("MAX_SUPERVISOR_REPLY_BYTES") &&
+      fleetViewSource.includes("new TextEncoder().encode(normalized).byteLength") &&
+      fleetViewSource.includes("declineConfirmationCancelRef.current?.focus()") &&
+      fleetViewSource.includes("declineConfirmationTriggerRef") &&
+      fleetViewSource.includes("Reply to supervisor request") &&
+      fleetViewSource.includes('aria-live="polite"'),
+  );
+  const supervisorRouteSource = await readFile(
+    resolve(repoRoot, "packages/server/src/routes/subagent-fleet.ts"),
+    "utf8",
+  );
+  const supervisorExternalSource = await readFile(
+    resolve(repoRoot, "packages/server/src/subagents-external.ts"),
+    "utf8",
+  );
+  assert(
+    "Supervisor ingestion is bounded, exact-correlated, reply-reconciled, and read-rate-limited",
+    supervisorRouteSource.includes("MAX_SUPERVISOR_REPLY_BYTES") &&
+      supervisorRouteSource.includes("rateLimit") &&
+      supervisorExternalSource.includes("MAX_SUPERVISOR_ARTIFACT_BYTES = 64 * 1024") &&
+      supervisorExternalSource.includes('parsed.type !== "subagent.supervisor.request"') &&
+      supervisorExternalSource.includes("expectedSupervisorChannelName") &&
+      supervisorExternalSource.includes("filename !== `${requestId}.json`") &&
+      supervisorExternalSource.includes("readBoundedJson") &&
+      supervisorExternalSource.includes("sortSupervisorHistory") &&
+      supervisorExternalSource.includes("Re-check prior open records"),
+  );
+
+  assert(
     "Fleet stop confirmation remains a single modal state with accessible cancellation",
     (fleetViewSource.match(/<Modal(?:\s|>)/g)?.length ?? 0) === 1 &&
       !fleetViewSource.includes("ConfirmDialog") &&

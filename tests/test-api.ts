@@ -23,7 +23,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -127,6 +127,8 @@ async function main(): Promise<void> {
       AUTH_BANNER_HTML: "true",
       AUTH_LOGO_URL: "https://example.com/pi-forge-logo.png",
       AUTH_COLOR_SCHEME: "#08111f,#102033,#3b82f6,#f8fafc,#cbd5e1,#38bdf8,#082f49,#7dd3fc",
+      RATE_LIMIT_PROMPT_MAX: "8",
+      RATE_LIMIT_PROMPT_WINDOW_MS: "60000",
       UI_PASSWORD: undefined,
       JWT_SECRET: undefined,
     },
@@ -321,12 +323,14 @@ async function main(): Promise<void> {
       const requestId = randomUUID();
       const declineId = randomUUID();
       const expiredId = randomUUID();
+      const terminalId = randomUUID();
+      const progressId = randomUUID();
+      const capacityId = randomUUID();
+      const oversizedInterviewId = randomUUID();
+      const malformedId = randomUUID();
       const parentSessionId = randomUUID();
       const runId = `supervisor-run-${randomUUID()}`;
-      supervisorFixturePath = join(
-        external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR,
-        `api-${randomUUID()}`,
-      );
+      supervisorFixturePath = join(external.SUBAGENTS_SUPERVISOR_CHANNEL_DIR, `${runId}-worker-0`);
       const requestsDir = join(supervisorFixturePath, "requests");
       await mkdir(join(supervisorFixturePath, "replies"), { recursive: true });
       await mkdir(requestsDir, { recursive: true });
@@ -357,7 +361,34 @@ async function main(): Promise<void> {
         ),
         writeFile(
           join(requestsDir, `${expiredId}.json`),
-          JSON.stringify(request(expiredId, Date.now() - 1)),
+          JSON.stringify({ ...request(expiredId, Date.now() - 1), createdAt: Date.now() - 1_000 }),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${terminalId}.json`),
+          JSON.stringify(request(terminalId, Date.now() + 60_000)),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${progressId}.json`),
+          JSON.stringify({
+            ...request(progressId, Date.now() + 60_000),
+            reason: "progress_update",
+            expectsReply: false,
+          }),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `${oversizedInterviewId}.json`),
+          JSON.stringify({
+            ...request(oversizedInterviewId, Date.now() + 60_000),
+            interview: { untrusted: "x".repeat(20 * 1024) },
+          }),
+          "utf8",
+        ),
+        writeFile(
+          join(requestsDir, `wrong-${malformedId}.json`),
+          JSON.stringify({ ...request(malformedId, Date.now() + 60_000), type: "wrong.type" }),
           "utf8",
         ),
       ]);
@@ -386,15 +417,31 @@ async function main(): Promise<void> {
           open.interview !== undefined,
         JSON.stringify(listed.body),
       );
+      const oversizedInterview = (
+        listed.body as { requests?: { requestId?: string; interview?: unknown }[] }
+      ).requests?.find((item) => item.requestId === oversizedInterviewId);
+      assert(
+        "native ingestion drops oversized untrusted interview context and malformed artifacts",
+        oversizedInterview?.interview === undefined &&
+          (listed.body as { requests?: { requestId?: string }[] }).requests?.some(
+            (item) => item.requestId === malformedId,
+          ) !== true,
+        JSON.stringify(listed.body),
+      );
       const replyUrl = `${listUrl}/${requestId}/reply`;
-      const [blankReply, extraReply] = await Promise.all([
+      const [blankReply, whitespaceReply, unicodeReply, extraReply] = await Promise.all([
         jsend("POST", replyUrl, { message: "" }, auth),
+        jsend("POST", replyUrl, { message: " \n\t " }, auth),
+        jsend("POST", replyUrl, { message: "🦀".repeat(16_385) }, auth),
         jsend("POST", replyUrl, { message: "valid", unexpected: true }, auth),
       ]);
       assert(
-        "native supervisor reply validates body input",
-        blankReply.status === 400 && extraReply.status === 400,
-        JSON.stringify({ blankReply, extraReply }),
+        "native supervisor reply rejects whitespace and Unicode byte overflow as 400",
+        blankReply.status === 400 &&
+          whitespaceReply.status === 400 &&
+          unicodeReply.status === 400 &&
+          extraReply.status === 400,
+        JSON.stringify({ blankReply, whitespaceReply, unicodeReply, extraReply }),
       );
       const [firstReply, racedReply] = await Promise.all([
         jsend("POST", replyUrl, { message: "Use the browser-native channel." }, auth),
@@ -409,9 +456,29 @@ async function main(): Promise<void> {
         await readFile(join(supervisorFixturePath, "replies", `${requestId}.json`), "utf8"),
       ) as { message?: string };
       assert(
-        "native supervisor reply preserves the first exact request reply",
+        "native supervisor reply preserves the first Forge writer",
         replyFile.message === "Use the browser-native channel.",
         JSON.stringify(replyFile),
+      );
+      const terminalTemp = join(supervisorFixturePath, "replies", `.${requestId}.terminal.tmp`);
+      await writeFile(
+        terminalTemp,
+        JSON.stringify({
+          type: "subagent.supervisor.reply",
+          requestId,
+          createdAt: Date.now(),
+          message: "terminal rename replaced the Forge reply",
+        }),
+        "utf8",
+      );
+      await rename(terminalTemp, join(supervisorFixturePath, "replies", `${requestId}.json`));
+      const terminalRaceReply = JSON.parse(
+        await readFile(join(supervisorFixturePath, "replies", `${requestId}.json`), "utf8"),
+      ) as { message?: string };
+      assert(
+        "terminal rename can overwrite a Forge reply; global first-writer semantics are not claimed",
+        terminalRaceReply.message === "terminal rename replaced the Forge reply",
+        JSON.stringify(terminalRaceReply),
       );
       await rm(join(requestsDir, `${requestId}.json`));
       const recovered = await jget(listUrl, auth);
@@ -421,6 +488,34 @@ async function main(): Promise<void> {
           (item) => item.requestId === requestId && item.status === "answered",
         ) === true,
         JSON.stringify(recovered.body),
+      );
+
+      await writeFile(
+        join(supervisorFixturePath, "replies", `${terminalId}.json`),
+        JSON.stringify({
+          type: "subagent.supervisor.reply",
+          requestId: terminalId,
+          createdAt: Date.now(),
+          message: "Terminal-only reply",
+        }),
+        "utf8",
+      );
+      await rm(join(requestsDir, `${terminalId}.json`));
+      const terminalRecovered = await jget(listUrl, auth);
+      assert(
+        "vanished native request with matching reply is reconciled as answered",
+        (
+          terminalRecovered.body as { requests?: { requestId?: string; status?: string }[] }
+        ).requests?.some((item) => item.requestId === terminalId && item.status === "answered") ===
+          true,
+        JSON.stringify(terminalRecovered.body),
+      );
+      assert(
+        "non-reply progress updates are intentionally absent from browser compatibility",
+        (terminalRecovered.body as { requests?: { requestId?: string }[] }).requests?.some(
+          (item) => item.requestId === progressId,
+        ) !== true,
+        JSON.stringify(terminalRecovered.body),
       );
 
       const declined = await jsend("POST", `${listUrl}/${declineId}/decline`, {}, auth);
@@ -443,6 +538,55 @@ async function main(): Promise<void> {
           (item) => item.requestId === expiredId && item.status === "expired",
         ) === true,
         JSON.stringify(expired.body),
+      );
+
+      const capacityHistory = Array.from({ length: 500 }, (_, index) => ({
+        requestId: randomUUID(),
+        parentSessionId,
+        runId: `history-run-${index}`,
+        agent: "worker",
+        childIndex: 0,
+        reason: "need_decision",
+        expectsReply: true,
+        createdAt: Date.now() - 100_000 - index,
+        expiresAt: Date.now() + 60_000,
+        message: "previous answered request",
+        status: "answered",
+        repliedAt: Date.now() - 100_000 - index,
+      }));
+      await writeFile(
+        join(dataDir, "subagent-supervisor-requests.json"),
+        JSON.stringify({ requests: capacityHistory }),
+        "utf8",
+      );
+      await writeFile(
+        join(requestsDir, `${capacityId}.json`),
+        JSON.stringify(request(capacityId, Date.now() + 60_000)),
+        "utf8",
+      );
+      const capacityReply = await jsend(
+        "POST",
+        `${listUrl}/${capacityId}/reply`,
+        { message: "new reply survives capacity" },
+        auth,
+      );
+      const persistedCapacity = JSON.parse(
+        await readFile(join(dataDir, "subagent-supervisor-requests.json"), "utf8"),
+      ) as { requests?: { requestId?: string }[] };
+      assert(
+        "newly answered request remains persisted at 500-entry history capacity",
+        capacityReply.status === 202 &&
+          persistedCapacity.requests?.length === 500 &&
+          persistedCapacity.requests.some((item) => item.requestId === capacityId) === true,
+        JSON.stringify({ capacityReply, persistedCapacity }),
+      );
+      const readRateResponses = await Promise.all(
+        Array.from({ length: 4 }, () => jget(listUrl, auth)),
+      );
+      assert(
+        "native supervisor request read endpoint is rate limited",
+        readRateResponses.some((response) => response.status === 429),
+        JSON.stringify(readRateResponses.map((response) => response.status)),
       );
     }
 

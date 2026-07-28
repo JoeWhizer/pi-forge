@@ -3,6 +3,8 @@ import { config } from "../config.js";
 import {
   listExternalSubagentFleetRuns,
   listExternalSupervisorRequests,
+  MAX_SUPERVISOR_REPLY_BYTES,
+  normalizeExternalSupervisorReply,
   replyExternalSupervisorRequest,
   queueExternalSubagentSteer,
   queueExternalSubagentStop,
@@ -75,7 +77,7 @@ const supervisorRequestSchema = {
     runId: { type: "string" },
     agent: { type: "string" },
     childIndex: { type: "integer", minimum: 0 },
-    reason: { type: "string", enum: ["need_decision", "interview_request", "progress_update"] },
+    reason: { type: "string", enum: ["need_decision", "interview_request"] },
     expectsReply: { type: "boolean" },
     createdAt: { type: "number", minimum: 0 },
     expiresAt: { type: "number", minimum: 0 },
@@ -101,6 +103,12 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get(
     "/subagent-supervisor/requests",
     {
+      config: {
+        rateLimit: {
+          max: config.rateLimits.promptMax,
+          timeWindow: config.rateLimits.promptWindowMs,
+        },
+      },
       schema: {
         description:
           "List persisted pi-subagents native supervisor requests with exact parent, run, and request correlation.",
@@ -141,11 +149,18 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
           body: {
             type: "object",
             additionalProperties: { not: {} },
-            properties: { message: { type: "string", minLength: 1, maxLength: 65536 } },
+            properties: {
+              message: { type: "string", minLength: 1, maxLength: MAX_SUPERVISOR_REPLY_BYTES },
+            },
             ...(action === "reply" ? { required: ["message"] } : {}),
           },
           response: {
             202: supervisorReplyResponseSchema,
+            400: {
+              type: "object",
+              required: ["error", "message"],
+              properties: { error: { const: "invalid_reply" }, message: { type: "string" } },
+            },
             404: {
               type: "object",
               required: ["error", "message"],
@@ -167,17 +182,25 @@ export const subagentFleetRoutes: FastifyPluginAsync = async (fastify) => {
       },
       async (req, reply) => {
         const message =
-          action === "decline"
-            ? req.body?.message?.trim() || "Declined by supervisor."
-            : req.body?.message;
+          action === "decline" && req.body?.message === undefined
+            ? "Declined by supervisor."
+            : normalizeExternalSupervisorReply(req.body?.message);
+        if (message === undefined) {
+          return reply.code(400).send({
+            error: "invalid_reply",
+            message: "A supervisor reply must contain non-whitespace text of at most 64 KiB.",
+          });
+        }
         const result = await replyExternalSupervisorRequest(
           req.params.requestId,
-          message ?? "",
+          message,
           action === "decline",
         );
         if (result.accepted) return reply.code(202).send(result);
         return reply
-          .code(result.code === "request_not_found" ? 404 : 409)
+          .code(
+            result.code === "request_not_found" ? 404 : result.code === "invalid_reply" ? 400 : 409,
+          )
           .send({ error: result.code, message: result.message });
       },
     );

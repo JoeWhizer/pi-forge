@@ -446,10 +446,7 @@ export interface SubagentFleetStopResponse {
 }
 
 export type SubagentSupervisorRequestStatus = "open" | "answered" | "cancelled" | "expired";
-export type SubagentSupervisorRequestReason =
-  | "need_decision"
-  | "interview_request"
-  | "progress_update";
+export type SubagentSupervisorRequestReason = "need_decision" | "interview_request";
 
 /** Exact correlation from pi-subagents 0.37 native supervisor request files. */
 export interface SubagentSupervisorRequest {
