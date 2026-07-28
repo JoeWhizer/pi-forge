@@ -648,7 +648,7 @@ function SteeringRequest({ request }: { request: SubagentFleetSteeringRequest })
 
 type SupervisorRequestVisualState =
   | "pending"
-  | "approved"
+  | "reply-sent"
   | "answered"
   | "rejected"
   | "expired"
@@ -656,7 +656,7 @@ type SupervisorRequestVisualState =
 
 function supervisorRequestVisualStatus(
   request: SubagentSupervisorRequest,
-  submissionState: "approved" | undefined,
+  submissionState: "reply-sent" | undefined,
   hasError: boolean,
 ): { state: SupervisorRequestVisualState; label: string; detail: string; className: string } {
   if (hasError) {
@@ -668,14 +668,14 @@ function supervisorRequestVisualStatus(
         "border-red-800/70 bg-red-950/30 text-red-200 light:border-red-300 light:bg-red-50 light:text-red-800",
     };
   }
-  if (submissionState === "approved") {
+  if (submissionState === "reply-sent") {
     return {
-      state: "approved",
-      label: "Approved — reply sent",
+      state: "reply-sent",
+      label: "Reply sent",
       detail:
         "The reply was written to the pi-subagents native supervisor channel; agent consumption is not confirmed.",
       className:
-        "border-emerald-800/70 bg-emerald-950/30 text-emerald-200 light:border-emerald-300 light:bg-emerald-50 light:text-emerald-800",
+        "border-sky-800/70 bg-sky-950/30 text-sky-100 light:border-sky-300 light:bg-sky-50 light:text-sky-900",
     };
   }
   return (
@@ -724,7 +724,7 @@ function SupervisorRequestStatus({
   const Icon =
     status.state === "pending" || status.state === "expired"
       ? Clock3
-      : status.state === "approved" || status.state === "answered"
+      : status.state === "reply-sent" || status.state === "answered"
         ? CheckCircle2
         : XCircle;
   return (
@@ -817,7 +817,7 @@ function SupervisorRequestRow({
 }) {
   const [answer, setAnswer] = useState("");
   const [sending, setSending] = useState(false);
-  const [submissionState, setSubmissionState] = useState<"approved" | undefined>();
+  const [submissionState, setSubmissionState] = useState<"reply-sent" | undefined>();
   const [error, setError] = useState<string | undefined>();
   const canReply =
     request.status === "open" && request.expectsReply && submissionState === undefined;
@@ -842,7 +842,7 @@ function SupervisorRequestRow({
     try {
       await api.replySubagentSupervisorRequest(request.requestId, normalized);
       setAnswer("");
-      setSubmissionState("approved");
+      setSubmissionState("reply-sent");
       await onSubmitted();
     } catch (err) {
       setError(err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message);

@@ -81,11 +81,18 @@ async function main(): Promise<void> {
       fleetStoreSource.includes("toggleSupervisorRequestExpanded"),
   );
   assert(
+    "Free-text replies use a neutral sent state; rejection is reserved for decline",
+    fleetViewSource.includes('state: "reply-sent"') &&
+      fleetViewSource.includes('label: "Reply sent"') &&
+      !fleetViewSource.includes("Approved") &&
+      fleetViewSource.includes("cancelled: {") &&
+      fleetViewSource.includes('state: "rejected"') &&
+      fleetViewSource.includes("Rejected — decline sent") &&
+      fleetViewSource.includes("Answered — terminal reply observed"),
+  );
+  assert(
     "Supervisor request cards give textual status and truthful pi-subagents delivery limits",
     fleetViewSource.includes("Needs decision") &&
-      fleetViewSource.includes("Approved — reply sent") &&
-      fleetViewSource.includes("Rejected — decline sent") &&
-      fleetViewSource.includes("Answered — terminal reply observed") &&
       fleetViewSource.includes("Expired") &&
       fleetViewSource.includes("Reply error") &&
       fleetViewSource.includes("pi-subagents does not") &&
