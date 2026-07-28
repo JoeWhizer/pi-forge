@@ -1,5 +1,5 @@
 import { mkdir, open, readdir, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   AgentSession,
   type AgentSessionEvent,
@@ -1939,14 +1939,21 @@ async function discoverSubagentChildSessions(
       // Apply the same header validation whether the SDK happened to return
       // it or we need the bounded non-mutating fallback below.
       const literalPath = join(sd, "session.jsonl");
+      const allowConfiguredRootCwd = isExactKnownLiteralRun(
+        sd,
+        parentDir,
+        parentSessionId,
+        workspacePath,
+      );
       infos = infos.filter(
         (info) =>
-          info.path !== literalPath || isValidLiteralChildInfo(info.id, info.cwd, workspacePath),
+          info.path !== literalPath ||
+          isValidLiteralChildInfo(info.id, info.cwd, workspacePath, allowConfiguredRootCwd),
       );
       // SessionManager.list intentionally filters some literal filenames, so
       // read that one bounded header directly instead of opening it (which can
       // migrate or rewrite source JSONL files).
-      const literalChild = await readLiteralChildSession(sd, workspacePath);
+      const literalChild = await readLiteralChildSession(sd, workspacePath, allowConfiguredRootCwd);
       if (literalChild !== undefined && !infos.some((info) => info.path === literalChild.path)) {
         infos = [...infos, literalChild];
       }
@@ -1980,17 +1987,51 @@ async function discoverSubagentChildSessions(
  * Read only the first 64 KiB of a literal pi-subagents child file. This is a
  * non-mutating counterpart to SessionManager.list for `run-N/session.jsonl`.
  */
-function isValidLiteralChildInfo(id: string, cwd: string, workspacePath: string): boolean {
+function isExactKnownLiteralRun(
+  dir: string,
+  parentDir: string,
+  parentSessionId: string | undefined,
+  workspacePath: string,
+): boolean {
+  if (parentSessionId === undefined) return false;
+  const segments = relative(parentDir, dir).split(/[/\\]/);
+  if (
+    segments.length !== 2 ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(segments[0] ?? "") ||
+    !/^run-\d+$/.test(segments[1] ?? "")
+  ) {
+    return false;
+  }
+  const configuredRoot = resolve(config.workspacePath);
+  const projectPath = resolve(workspacePath);
+  const projectRelative = relative(configuredRoot, projectPath);
+  return (
+    projectRelative.length > 0 &&
+    projectRelative !== ".." &&
+    !projectRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
+    !isAbsolute(projectRelative)
+  );
+}
+
+function isValidLiteralChildInfo(
+  id: string,
+  cwd: string,
+  workspacePath: string,
+  allowConfiguredRootCwd = false,
+): boolean {
+  const resolvedCwd = resolve(cwd);
   return (
     /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(id) &&
     cwd.length > 0 &&
-    resolve(cwd) === resolve(workspacePath)
+    (resolvedCwd === resolve(workspacePath) ||
+      (allowConfiguredRootCwd && resolvedCwd === resolve(config.workspacePath)))
   );
 }
 
 async function readLiteralChildSession(
   dir: string,
   workspacePath: string,
+  allowConfiguredRootCwd = false,
 ): Promise<SessionInfo | undefined> {
   if (!/^run-\d+$/.test(basename(dir))) return undefined;
   const path = join(dir, "session.jsonl");
@@ -2008,7 +2049,7 @@ async function readLiteralChildSession(
       value.type !== "session" ||
       typeof value.id !== "string" ||
       typeof value.cwd !== "string" ||
-      !isValidLiteralChildInfo(value.id, value.cwd, workspacePath) ||
+      !isValidLiteralChildInfo(value.id, value.cwd, workspacePath, allowConfiguredRootCwd) ||
       typeof value.timestamp !== "string" ||
       Number.isNaN(Date.parse(value.timestamp))
     ) {

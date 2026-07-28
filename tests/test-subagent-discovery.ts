@@ -109,6 +109,10 @@ interface TestRegistry {
   resumeSession: (id: string, projectId: string, workspacePath: string) => Promise<TestLive>;
   resumeSessionById: (id: string) => Promise<TestLive>;
   discoverSessionsOnDisk: (projectId: string, workspacePath: string) => Promise<TestDiscovered[]>;
+  refreshProjectSessionIndex: (
+    projectId: string,
+    workspacePath: string,
+  ) => Promise<TestDiscovered[]>;
   listSessionsForProject: (
     projectId: string,
     workspacePath: string,
@@ -170,8 +174,11 @@ async function main(): Promise<void> {
     deliverExternalSubagentSessionListChange: (runId: string) => Promise<void>;
   };
 
-  // Register the project so findSessionLocation can locate children.
-  const project = await pm.createProject("test-subagent-project", workspacePath);
+  // Register a project below the configured workspace root, matching the
+  // container path relationship exercised by Production.
+  const projectPath = join(workspacePath, "test-subagent-project");
+  await mkdir(projectPath, { recursive: true });
+  const project = await pm.createProject("test-subagent-project", projectPath);
 
   try {
     // 1. Parent session — created via the registry like any normal session.
@@ -868,22 +875,85 @@ async function main(): Promise<void> {
       `got runId=${deepChildEntry?.runId}`,
     );
 
-    const malformedLiteralPath = join(
+    const rootCwdChildId = randomUUID();
+    const rootCwdLiteralPath = join(
       projectSessionDir,
       deepBasename,
       deepRunId,
       "run-1",
       "session.jsonl",
     );
-    const foreignLiteralPath = join(
+    await writeChildSessionFile(rootCwdLiteralPath, rootCwdChildId, workspacePath);
+    const rootCwdLiteralSource = await readFile(rootCwdLiteralPath, "utf8");
+    const refreshedRootCwdDiscovery = await registry.refreshProjectSessionIndex(
+      project.id,
+      project.path,
+    );
+    const rootCwdChild = refreshedRootCwdDiscovery.find((d) => d.sessionId === rootCwdChildId);
+    assert(
+      "explicit index refresh discovers exact known run-N child at configured root cwd",
+      rootCwdChild?.parentSessionId === deepParentId &&
+        (rootCwdChild.runId === `${deepRunId}/run-1` ||
+          rootCwdChild.runId === `${deepRunId}\\run-1`),
+      `entry=${JSON.stringify(rootCwdChild)}`,
+    );
+    const rootCwdUnified = await registry.listSessionsForProject(project.id, project.path);
+    assert(
+      "root-cwd child projects into the nested sidebar listing after refresh",
+      rootCwdUnified.some(
+        (session) =>
+          session.sessionId === rootCwdChildId && session.parentSessionId === deepParentId,
+      ),
+    );
+    assert(
+      "accepted root-cwd literal parsing remains non-mutating",
+      (await readFile(rootCwdLiteralPath, "utf8")) === rootCwdLiteralSource,
+    );
+
+    const malformedLiteralPath = join(
       projectSessionDir,
       deepBasename,
       deepRunId,
       "run-2",
       "session.jsonl",
     );
+    const foreignLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-3",
+      "session.jsonl",
+    );
+    const unknownParentLiteralPath = join(
+      projectSessionDir,
+      "missing-parent-basename",
+      deepRunId,
+      "run-4",
+      "session.jsonl",
+    );
+    const badRunPathLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "not-run-5",
+      "session.jsonl",
+    );
+    const descendantCwdLiteralPath = join(
+      projectSessionDir,
+      deepBasename,
+      deepRunId,
+      "run-6",
+      "session.jsonl",
+    );
     await writeChildSessionFile(malformedLiteralPath, "invalid session id", project.path);
     await writeChildSessionFile(foreignLiteralPath, randomUUID(), join(workspacePath, "other"));
+    await writeChildSessionFile(unknownParentLiteralPath, randomUUID(), workspacePath);
+    await writeChildSessionFile(badRunPathLiteralPath, randomUUID(), workspacePath);
+    await writeChildSessionFile(
+      descendantCwdLiteralPath,
+      randomUUID(),
+      join(workspacePath, "nested"),
+    );
     const malformedLiteralSource = await readFile(malformedLiteralPath, "utf8");
     const foreignLiteralSource = await readFile(foreignLiteralPath, "utf8");
     const validatedLiteralDiscovery = await registry.discoverSessionsOnDisk(
@@ -892,8 +962,14 @@ async function main(): Promise<void> {
     );
     assert(
       "literal child parser rejects malformed session ids and foreign workspace cwd",
-      !validatedLiteralDiscovery.some(
-        (d) => d.path === malformedLiteralPath || d.path === foreignLiteralPath,
+      !validatedLiteralDiscovery.some((d) =>
+        [
+          malformedLiteralPath,
+          foreignLiteralPath,
+          unknownParentLiteralPath,
+          badRunPathLiteralPath,
+          descendantCwdLiteralPath,
+        ].includes(d.path ?? ""),
       ),
     );
     assert(
