@@ -8,6 +8,7 @@ import {
   filterCleanedSubagentFleetRuns,
   formatSubagentDuration,
   groupSubagentFleetRuns,
+  isCleanableSubagentFleetState,
   isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
@@ -59,12 +60,14 @@ async function main(): Promise<void> {
     "utf8",
   );
   assert(
-    "Fleet omits supervisor request presentation and keeps Clean scoped to terminal runs",
+    "Fleet omits supervisor request presentation and keeps Clean local for terminal or paused runs",
     !fleetViewSource.includes("SupervisorRequests") &&
       !fleetViewSource.includes("supervisor request") &&
       !fleetStoreSource.includes("listSubagentSupervisorRequests") &&
       !fleetStoreSource.includes("hiddenSupervisorRequestIds") &&
-      fleetViewSource.includes("Clean only hides terminal runs"),
+      fleetViewSource.includes("Clean only hides terminal or paused runs") &&
+      fleetViewSource.includes("Paused runs have no supported") &&
+      fleetStoreSource.includes("resetCleanedRuns: () => set({ hiddenRunIds: [] })"),
   );
   const supervisorRouteSource = await readFile(
     resolve(repoRoot, "packages/server/src/routes/subagent-fleet.ts"),
@@ -174,6 +177,10 @@ async function main(): Promise<void> {
   const failedRoot = `fleet-failed-${randomUUID()}`;
   const malformedRoot = `fleet-malformed-${randomUUID()}`;
   const processFailedRoot = `fleet-process-failed-${randomUUID()}`;
+  const pausedStoppedRoot = `fleet-paused-stopped-${randomUUID()}`;
+  const pausedStoppedRunId = `paused-stopped-${randomUUID()}`;
+  const permanentlyPausedRoot = `fleet-permanently-paused-${randomUUID()}`;
+  const permanentlyPausedRunId = `permanently-paused-${randomUUID()}`;
   // These collide in the 500-character prefix formerly used by the server.
   const longRunIdPrefix = `stable-run-${"r".repeat(500)}`;
   const activeRunId = `${longRunIdPrefix}-active`;
@@ -192,7 +199,10 @@ async function main(): Promise<void> {
     join(external.SUBAGENTS_ASYNC_DIR, failedRoot),
     join(external.SUBAGENTS_ASYNC_DIR, malformedRoot),
     join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot),
+    join(external.SUBAGENTS_ASYNC_DIR, pausedStoppedRoot),
+    join(external.SUBAGENTS_ASYNC_DIR, permanentlyPausedRoot),
     join(external.SUBAGENTS_RESULTS_DIR, `${failedRoot}.json`),
+    join(external.SUBAGENTS_RESULTS_DIR, `${pausedStoppedRoot}.json`),
     join(external.SUBAGENTS_RESULTS_DIR, `${processFailedRoot}.json`),
     fixtureDir,
   ];
@@ -269,6 +279,43 @@ async function main(): Promise<void> {
         sessionId: parentSessionId,
         success: false,
         results: [{ agent: "worker", exitCode: 1 }],
+      }),
+      "utf8",
+    );
+
+    // A child can be stopped outside Forge after the runner has persisted a
+    // paused status. The result artifact is the only observable terminal signal
+    // until pi-subagents advances status.json.
+    await mkdir(join(external.SUBAGENTS_ASYNC_DIR, pausedStoppedRoot), { recursive: true });
+    await writeFile(
+      join(external.SUBAGENTS_ASYNC_DIR, pausedStoppedRoot, "status.json"),
+      JSON.stringify({
+        runId: pausedStoppedRunId,
+        sessionId: parentSessionId,
+        state: "paused",
+        startedAt: 9_000,
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(external.SUBAGENTS_RESULTS_DIR, `${pausedStoppedRoot}.json`),
+      JSON.stringify({
+        runId: pausedStoppedRunId,
+        sessionId: parentSessionId,
+        state: "stopped",
+        success: false,
+      }),
+      "utf8",
+    );
+
+    await mkdir(join(external.SUBAGENTS_ASYNC_DIR, permanentlyPausedRoot), { recursive: true });
+    await writeFile(
+      join(external.SUBAGENTS_ASYNC_DIR, permanentlyPausedRoot, "status.json"),
+      JSON.stringify({
+        runId: permanentlyPausedRunId,
+        sessionId: parentSessionId,
+        state: "paused",
+        startedAt: 9_500,
       }),
       "utf8",
     );
@@ -427,6 +474,8 @@ async function main(): Promise<void> {
     const active = allRuns.find((run) => run.runId === activeRunId);
     const failed = allRuns.find((run) => run.runId === failedRunId);
     const processFailed = allRuns.find((run) => run.runId === processFailedRunId);
+    const pausedStopped = allRuns.find((run) => run.runId === pausedStoppedRunId);
+    const permanentlyPaused = allRuns.find((run) => run.runId === permanentlyPausedRunId);
     assert(
       "fleet preserves full stable run identities beyond 500 characters",
       active?.parentSessionId === parentSessionId &&
@@ -454,6 +503,11 @@ async function main(): Promise<void> {
       JSON.stringify(failed),
     );
     assert(
+      "an observed stopped result overrides a stale paused Fleet status on reload",
+      pausedStopped?.state === "stopped" && permanentlyPaused?.state === "paused",
+      JSON.stringify(pausedStopped),
+    );
+    assert(
       "non-zero pi-subagent exit code projects completed status as failed",
       processFailed?.state === "failed" &&
         processFailed.children[0]?.state === "failed" &&
@@ -463,10 +517,22 @@ async function main(): Promise<void> {
     );
     activeStatus.lastActivityAt = 3_000;
     await writeFile(activeStatusPath, JSON.stringify(activeStatus), "utf8");
+    // Regression: a run can remain paused indefinitely until a later terminal
+    // result is observable. A forced reload must replace the paused projection.
+    await writeFile(
+      join(external.SUBAGENTS_RESULTS_DIR, `${permanentlyPausedRoot}.json`),
+      JSON.stringify({
+        runId: permanentlyPausedRunId,
+        sessionId: parentSessionId,
+        state: "stopped",
+      }),
+      "utf8",
+    );
     const forcedRuns = await external.listExternalSubagentFleetRuns(true);
     assert(
-      "forced Fleet reload reads updated lifecycle artifacts",
-      forcedRuns.find((run) => run.runId === activeRunId)?.lastActivityAt === 3_000,
+      "forced Fleet reload reads paused-to-stopped lifecycle artifacts",
+      forcedRuns.find((run) => run.runId === activeRunId)?.lastActivityAt === 3_000 &&
+        forcedRuns.find((run) => run.runId === permanentlyPausedRunId)?.state === "stopped",
     );
 
     assert(
@@ -494,10 +560,14 @@ async function main(): Promise<void> {
     );
     const oversizedRunId = "r".repeat(160);
     assert(
-      "Clean filters only selected Fleet rows and both hierarchy levels start collapsed",
-      filterCleanedSubagentFleetRuns(allRuns, new Set([failedRunId, processFailedRunId])).every(
-        (run) => run.runId !== failedRunId && run.runId !== processFailedRunId,
-      ) &&
+      "Clean hides paused rows locally, Reset restores them, and both hierarchy levels start collapsed",
+      isCleanableSubagentFleetState("paused") &&
+        !filterCleanedSubagentFleetRuns(allRuns, new Set([permanentlyPausedRunId])).some(
+          (run) => run.runId === permanentlyPausedRunId,
+        ) &&
+        filterCleanedSubagentFleetRuns(allRuns, new Set()).some(
+          (run) => run.runId === permanentlyPausedRunId,
+        ) &&
         !shouldExpandSubagentFleetRuns([active!]) &&
         !shouldExpandSubagentFleetRuns([failed!]) &&
         !shouldExpandSubagentFleetRun(active!) &&
@@ -552,6 +622,11 @@ async function main(): Promise<void> {
       rm(join(external.SUBAGENTS_ASYNC_DIR, activeRoot), { recursive: true, force: true }),
       rm(join(external.SUBAGENTS_ASYNC_DIR, failedRoot), { recursive: true, force: true }),
       rm(join(external.SUBAGENTS_ASYNC_DIR, processFailedRoot), { recursive: true, force: true }),
+      rm(join(external.SUBAGENTS_ASYNC_DIR, pausedStoppedRoot), { recursive: true, force: true }),
+      rm(join(external.SUBAGENTS_ASYNC_DIR, permanentlyPausedRoot), {
+        recursive: true,
+        force: true,
+      }),
     ]);
     await external.listExternalSubagentFleetRuns();
     assert(

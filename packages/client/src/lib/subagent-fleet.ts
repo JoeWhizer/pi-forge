@@ -60,9 +60,13 @@ export function isActiveSubagentFleetState(state: SubagentFleetState): boolean {
   return state === "queued" || state === "running";
 }
 
-/** Clean only hides finished runs locally; paused runs remain visible for follow-up. */
+/**
+ * Clean only hides local Fleet rows. Paused runs are cleanable because Forge
+ * exposes no supported resume control; this never changes their session or
+ * pi-subagents lifecycle artifacts.
+ */
 export function isCleanableSubagentFleetState(state: SubagentFleetState): boolean {
-  return state === "complete" || state === "failed" || state === "stopped";
+  return state === "complete" || state === "failed" || state === "paused" || state === "stopped";
 }
 
 export function filterCleanedSubagentFleetRuns(

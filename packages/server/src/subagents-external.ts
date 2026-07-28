@@ -161,6 +161,7 @@ interface AsyncResult {
   success?: boolean;
   exitCode?: number;
   error?: string;
+  state?: string;
   sessionFile?: string;
 }
 
@@ -1272,8 +1273,19 @@ function resultFailureError(
 /** A completed launcher can still contain a failed child process result. */
 function projectedState(
   statusState: ExternalSubagentState,
-  result: AsyncOutcome | undefined,
+  result: (AsyncOutcome & { state?: unknown }) | undefined,
 ): ExternalSubagentState {
+  // status.json remains authoritative once it records a non-paused terminal
+  // transition. A paused artifact, however, can be left behind when a child is
+  // stopped outside Forge; prefer an observed terminal result over that stale
+  // pause without attempting to control or rewrite pi-subagents artifacts.
+  if (statusState !== "paused" && TERMINAL_STATES.has(statusState)) {
+    return statusState === "complete" && hasFailedResult(result) ? "failed" : statusState;
+  }
+  const resultState = isExternalState(result?.state) ? result.state : undefined;
+  if (resultState !== undefined && resultState !== "paused" && TERMINAL_STATES.has(resultState)) {
+    return resultState === "complete" && hasFailedResult(result) ? "failed" : resultState;
+  }
   return statusState === "complete" && hasFailedResult(result) ? "failed" : statusState;
 }
 

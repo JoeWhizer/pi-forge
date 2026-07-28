@@ -257,7 +257,7 @@ export function SubagentFleetView({ onClose }: Props) {
                   isCleanableSubagentFleetState(run.state) && !hiddenRunIds.includes(run.runId),
               )
             }
-            title="Hide terminal runs from this Fleet view only. Sessions, artifacts, and server history are preserved."
+            title="Hide terminal or paused runs from this Fleet view only. Sessions, artifacts, and server history are preserved."
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
             <Trash2 size={12} />
@@ -274,8 +274,9 @@ export function SubagentFleetView({ onClose }: Props) {
           </button>
         </header>
         <div className="border-b border-neutral-800 px-4 py-1.5 text-[10px] text-neutral-500 light:border-neutral-200">
-          Clean only hides terminal runs in this Fleet view. Reset restores them; neither action
-          changes sessions, artifacts, server history, or server state.
+          Clean only hides terminal or paused runs in this Fleet view. Paused runs have no supported
+          Forge resume control. Reset restores them; neither action changes sessions, artifacts,
+          server history, or server state.
         </div>
 
         {(error !== undefined || openError !== undefined) && (
