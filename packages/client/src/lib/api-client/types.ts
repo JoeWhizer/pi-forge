@@ -466,6 +466,8 @@ export interface SubagentSupervisorRequest {
   decision: SubagentSupervisorDecision;
   status: SubagentSupervisorRequestStatus;
   repliedAt?: number;
+  /** Exact persisted reply text when the native channel exposed it. */
+  replyMessage?: string;
 }
 
 export interface SubagentSupervisorReplyResponse {

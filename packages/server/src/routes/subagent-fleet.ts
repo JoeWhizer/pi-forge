@@ -92,6 +92,7 @@ const supervisorRequestSchema = {
     decision: supervisorDecisionSchema,
     status: supervisorStatusSchema,
     repliedAt: { type: "number", minimum: 0 },
+    replyMessage: { type: "string" },
   },
 } as const;
 

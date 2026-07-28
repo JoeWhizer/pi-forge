@@ -47,6 +47,12 @@ import { QuickActionRunCard } from "./QuickActionRunCard";
 import { useQuickActionRunsStore, type QuickActionRun } from "../store/quick-actions-store";
 import { placeChatTimelineItems, type ChatTimelinePosition } from "../lib/chat-timeline";
 import { parseSubagentDetails, type SubagentResult } from "../lib/subagent-parser";
+import {
+  supervisorDecisionFromForgeReplyEvent,
+  supervisorDecisionFromValue,
+  supervisorDecisionPresentation,
+} from "../lib/subagent-supervisor-decision";
+import type { SubagentSupervisorDecision } from "../lib/api-client/types";
 import { OrchestrationPanel } from "./OrchestrationPanel";
 import { useUiConfigStore } from "../store/ui-config-store";
 import {
@@ -1434,6 +1440,19 @@ function Message({
   if (message.role === "custom" && message.customType === "subagent_supervisor_request") {
     return <SupervisorRequestCard message={message} />;
   }
+  if (message.role === "custom" && message.customType === "subagent_supervisor_reply") {
+    const details =
+      typeof message.details === "object" && message.details !== null
+        ? (message.details as Record<string, unknown>)
+        : {};
+    return (
+      <SupervisorReplyCard
+        requestId={typeof details.requestId === "string" ? details.requestId : "unknown"}
+        message={stringifyCustomContent(message.content)}
+        decision={supervisorDecisionFromForgeReplyEvent(details)}
+      />
+    );
+  }
   if (message.role === "custom" && message.customType === "subagent_watchdog_warning") {
     return <WatchdogWarningCard message={message} />;
   }
@@ -1569,46 +1588,34 @@ function SupervisorRequestCard({ message }: { message: AgentMessageLike }) {
 function SupervisorReplyCard({
   requestId,
   message,
-  isError,
+  decision,
   text,
 }: {
   requestId: string;
   message: string;
-  isError: boolean;
-  text: string;
+  decision: SubagentSupervisorDecision;
+  text?: string;
 }) {
-  const rejected =
-    isError || /\b(rejected|reject|denied|declined|abgelehnt|verweigert)\b/i.test(message);
-  const approved =
-    !rejected &&
-    /\b(approved|approve|accepted|proceed|continue|genehmigt|freigegeben)\b/i.test(message);
-  const style = rejected
-    ? "border-red-800/60 bg-red-950/25 light:border-red-300 light:bg-red-50"
-    : approved
-      ? "border-emerald-800/60 bg-emerald-950/25 light:border-emerald-300 light:bg-emerald-50"
-      : "border-sky-800/60 bg-sky-950/20 light:border-sky-300 light:bg-sky-50";
-  const tone = rejected
-    ? "text-red-200 light:text-red-900"
-    : approved
-      ? "text-emerald-200 light:text-emerald-900"
-      : "text-sky-200 light:text-sky-900";
-  const label = rejected ? "rejected" : approved ? "approved" : "replied";
+  const presentation = supervisorDecisionPresentation(decision);
+  const classified = supervisorDecisionFromValue(decision);
 
   return (
-    <details open className={`rounded-lg border px-3 py-2 text-xs ${style}`}>
+    <details open className={`rounded-lg border px-3 py-2 text-xs ${presentation.className}`}>
       <summary
-        className={`flex cursor-pointer list-none items-center gap-2 ${tone} [&::-webkit-details-marker]:hidden`}
+        className={`flex cursor-pointer list-none items-center gap-2 ${presentation.toneClassName} [&::-webkit-details-marker]:hidden`}
       >
-        {rejected ? <X size={14} /> : <Check size={14} />}
+        {classified === "rejected" ? <X size={14} /> : <Check size={14} />}
         <span className="font-medium">Supervisor reply</span>
-        <span className="ml-auto font-mono text-[10px] uppercase tracking-wide">{label}</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wide">
+          {presentation.label}
+        </span>
       </summary>
       {message.length > 0 && (
         <p className="mt-2 whitespace-pre-wrap text-neutral-200 light:text-neutral-800">
           {message}
         </p>
       )}
-      {text.length > 0 && text !== message && (
+      {text !== undefined && text.length > 0 && text !== message && (
         <pre className="mt-2 whitespace-pre-wrap text-neutral-400">{text}</pre>
       )}
       <div className="mt-2 font-mono text-[10px] text-neutral-400">request: {requestId}</div>
@@ -2218,7 +2225,7 @@ function ToolCallEntry({
       <SupervisorReplyCard
         requestId={requestId}
         message={reply}
-        isError={isError}
+        decision="no-decision"
         text={outputText}
       />
     );
@@ -2402,7 +2409,9 @@ function ToolResult({ message }: { message: AgentMessageLike }) {
         ? (message.details as Record<string, unknown>)
         : {};
     const requestId = typeof details.replyTo === "string" ? details.replyTo : "unknown";
-    return <SupervisorReplyCard requestId={requestId} message="" isError={isError} text={text} />;
+    return (
+      <SupervisorReplyCard requestId={requestId} message="" decision="no-decision" text={text} />
+    );
   }
 
   // Generic tool result fallback.

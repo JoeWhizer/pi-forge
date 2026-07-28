@@ -503,6 +503,7 @@ function vSubagentSupervisorRequests(
         request.expiresAt = raw.expiresAt;
       if (typeof raw.repliedAt === "number" && Number.isFinite(raw.repliedAt))
         request.repliedAt = raw.repliedAt;
+      if (typeof raw.replyMessage === "string") request.replyMessage = raw.replyMessage;
       if (raw.interview !== undefined) request.interview = raw.interview;
       return request;
     }),

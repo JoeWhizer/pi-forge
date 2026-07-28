@@ -601,13 +601,19 @@ async function main(): Promise<void> {
           approvedReply.decision === "approved" &&
           (
             decidedList.body as {
-              requests?: { requestId?: string; status?: string; decision?: string }[];
+              requests?: {
+                requestId?: string;
+                status?: string;
+                decision?: string;
+                replyMessage?: string;
+              }[];
             }
           ).requests?.some(
             (item) =>
               item.requestId === approveId &&
               item.status === "answered" &&
-              item.decision === "approved",
+              item.decision === "approved" &&
+              item.replyMessage === decisionNote,
           ) === true,
         JSON.stringify({ approved: approved.body, reply: approvedReply, list: decidedList.body }),
       );
@@ -671,8 +677,8 @@ async function main(): Promise<void> {
       );
       const capacityReply = await jsend(
         "POST",
-        `${listUrl}/${capacityId}/reply`,
-        { message: "new reply survives capacity" },
+        `${listUrl}/${capacityId}/approve`,
+        { message: "new approved reply survives capacity" },
         auth,
       );
       const persistedCapacity = JSON.parse(
@@ -681,6 +687,7 @@ async function main(): Promise<void> {
       assert(
         "newly answered request remains persisted at 500-entry history capacity",
         capacityReply.status === 202 &&
+          (capacityReply.body as { decision?: string }).decision === "approved" &&
           persistedCapacity.requests?.length === 500 &&
           persistedCapacity.requests.some((item) => item.requestId === capacityId) === true,
         JSON.stringify({ capacityReply, persistedCapacity }),

@@ -62,6 +62,7 @@ import { generateSessionTitleFromPrompt, isGenericSessionName } from "./session-
 import {
   getExternalSubagentStatusForSession,
   listExternalSubagentStatusesForParents,
+  replayForgeSupervisorRepliesForSession,
 } from "./subagents-external.js";
 import { readSandboxSettings } from "./sandbox-settings.js";
 import {
@@ -1539,6 +1540,7 @@ export async function resumeSession(
     live.unsubscribe = makeSubscribeHandler(live);
     registry.set(live.sessionId, live);
     await bindWebExtensionContext(live);
+    await replayForgeSupervisorRepliesForSession(live.sessionId);
     return live;
   });
 }

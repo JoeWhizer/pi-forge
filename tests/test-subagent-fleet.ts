@@ -21,6 +21,11 @@ import type {
   SubagentFleetRun,
   SubagentSupervisorRequest,
 } from "../packages/client/src/lib/api-client/types";
+import {
+  supervisorDecisionFromForgeReplyEvent,
+  supervisorDecisionFromValue,
+  supervisorDecisionPresentation,
+} from "../packages/client/src/lib/subagent-supervisor-decision";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let failures = 0;
@@ -77,6 +82,14 @@ async function main(): Promise<void> {
     resolve(repoRoot, "packages/client/src/store/subagent-fleet-store.ts"),
     "utf8",
   );
+  const decisionModelSource = await readFile(
+    resolve(repoRoot, "packages/client/src/lib/subagent-supervisor-decision.ts"),
+    "utf8",
+  );
+  const chatViewSource = await readFile(
+    resolve(repoRoot, "packages/client/src/components/ChatView.tsx"),
+    "utf8",
+  );
   assert(
     "Supervisor requests frame has an accessible heading/button and an always-rendered controlled region",
     fleetViewSource.includes("aria-labelledby={headingId}") &&
@@ -97,9 +110,10 @@ async function main(): Promise<void> {
     "Transport and decision state are separate; free-text never implies approval",
     fleetViewSource.includes('state: "reply-sent"') &&
       fleetViewSource.includes('label: "Reply sent"') &&
-      fleetViewSource.includes("No decision recorded") &&
-      fleetViewSource.includes("Approved") &&
-      fleetViewSource.includes("Rejected") &&
+      decisionModelSource.includes("No decision recorded") &&
+      decisionModelSource.includes("Approved") &&
+      decisionModelSource.includes("Rejected") &&
+      fleetViewSource.includes("supervisorDecisionPresentation") &&
       fleetViewSource.includes("setSubmissionDecision(result.decision)") &&
       fleetViewSource.includes("onReplySent(request.requestId, result.decision)") &&
       fleetViewSource.includes("Optional decision note sent with Approve or Reject") &&
@@ -154,6 +168,26 @@ async function main(): Promise<void> {
       fleetStoreSource.includes("sentSupervisorReplyIds"),
   );
 
+  assert(
+    "Chat and Fleet use the exact same metadata-only decision model",
+    supervisorDecisionFromValue("approved") === "approved" &&
+      supervisorDecisionFromValue("Rejected in arbitrary free text") === "no-decision" &&
+      supervisorDecisionFromForgeReplyEvent({
+        source: "pi-forge",
+        kind: "supervisor-reply",
+        decision: "rejected",
+      }) === "rejected" &&
+      supervisorDecisionFromForgeReplyEvent({
+        replyTo: "native-tool-request",
+        decision: "approved",
+        message: "Approved in arbitrary native metadata",
+      }) === "no-decision" &&
+      supervisorDecisionPresentation("approved").label === "Approved" &&
+      supervisorDecisionPresentation("rejected").label === "Rejected" &&
+      supervisorDecisionPresentation("unexpected").label === "No decision recorded" &&
+      chatViewSource.includes('message.customType === "subagent_supervisor_reply"') &&
+      chatViewSource.includes('decision="no-decision"'),
+  );
   assert(
     "Fleet stop confirmation remains a single modal state with accessible cancellation",
     (fleetViewSource.match(/<Modal(?:\s|>)/g)?.length ?? 0) === 1 &&

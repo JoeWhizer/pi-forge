@@ -231,6 +231,10 @@ export interface ExternalSupervisorRequest {
   decision: ExternalSupervisorDecision;
   status: ExternalSupervisorRequestStatus;
   repliedAt?: number;
+  /** Exact reply text retained after pi-subagents removes its native artifacts. */
+  replyMessage?: string;
+  /** Only Forge browser actions create durable chat reply cards. */
+  replySource?: "forge-browser";
 }
 
 interface SupervisorRequestFile {
@@ -255,6 +259,11 @@ interface SupervisorReplyFile {
   message?: unknown;
   /** Ignored on ingestion: only Forge's persisted action is authoritative. */
   decision?: unknown;
+}
+
+interface ValidSupervisorReplyFile extends SupervisorReplyFile {
+  createdAt: number;
+  message: string;
 }
 
 interface SupervisorRequestRecord extends ExternalSupervisorRequest {
@@ -477,6 +486,9 @@ function isPersistedSupervisorRequest(request: unknown): request is ExternalSupe
     finiteTimestamp(value.createdAt) !== undefined &&
     finiteTimestamp(value.expiresAt) !== undefined &&
     safeSupervisorString(value.message, MAX_PERSISTED_SUPERVISOR_MESSAGE_BYTES) !== undefined &&
+    (value.replyMessage === undefined ||
+      safeSupervisorString(value.replyMessage, MAX_SUPERVISOR_REPLY_BYTES) !== undefined) &&
+    (value.replySource === undefined || value.replySource === "forge-browser") &&
     (legacyStatus === "open" ||
       legacyStatus === "answered" ||
       legacyStatus === "cancelled" ||
@@ -496,8 +508,20 @@ async function readSupervisorHistory(): Promise<ExternalSupervisorRequest[]> {
     .slice(0, MAX_SUPERVISOR_HISTORY)
     .map((request) =>
       (request as { status?: unknown }).status === "cancelled"
-        ? { ...request, status: "answered" as const, decision: "rejected" as const }
-        : { ...request, decision: persistedSupervisorDecision(request.decision) },
+        ? {
+            ...request,
+            status: "answered" as const,
+            decision: "rejected" as const,
+            replySource: "forge-browser" as const,
+          }
+        : {
+            ...request,
+            decision: persistedSupervisorDecision(request.decision),
+            ...(persistedSupervisorDecision(request.decision) === "no-decision" ||
+            request.replySource === "forge-browser"
+              ? {}
+              : { replySource: "forge-browser" as const }),
+          },
     );
 }
 
@@ -526,19 +550,21 @@ function replyFileFor(request: ExternalSupervisorRequest): string {
 async function readSupervisorReply(
   path: string,
   requestId: string,
-): Promise<SupervisorReplyFile | undefined> {
+): Promise<ValidSupervisorReplyFile | undefined> {
   const parsed = await readBoundedJson<SupervisorReplyFile>(path);
+  const createdAt = finiteTimestamp(parsed?.createdAt);
+  const message = safeSupervisorString(parsed?.message, MAX_SUPERVISOR_ARTIFACT_BYTES);
   return parsed?.type === "subagent.supervisor.reply" &&
     parsed.requestId === requestId &&
-    finiteTimestamp(parsed.createdAt) !== undefined &&
-    safeSupervisorString(parsed.message, MAX_SUPERVISOR_ARTIFACT_BYTES) !== undefined
-    ? parsed
+    createdAt !== undefined &&
+    message !== undefined
+    ? { ...parsed, createdAt, message }
     : undefined;
 }
 
 function supervisorStatus(
   request: ExternalSupervisorRequest,
-  reply: SupervisorReplyFile | undefined,
+  reply: ValidSupervisorReplyFile | undefined,
   now: number,
 ): ExternalSupervisorRequestStatus {
   if (reply !== undefined) return "answered";
@@ -560,8 +586,73 @@ function sortSupervisorHistory(requests: ExternalSupervisorRequest[]): ExternalS
 function publicSupervisorRequest(
   record: SupervisorRequestRecord | ExternalSupervisorRequest,
 ): ExternalSupervisorRequest {
-  const { channelDir: _channelDir, ...request } = record as SupervisorRequestRecord;
-  return { ...request, decision: persistedSupervisorDecision(request.decision) };
+  const {
+    channelDir: _channelDir,
+    replySource: _replySource,
+    ...request
+  } = record as SupervisorRequestRecord;
+  const replyMessage = safeSupervisorString(request.replyMessage, MAX_SUPERVISOR_REPLY_BYTES);
+  return {
+    ...request,
+    decision: persistedSupervisorDecision(request.decision),
+    ...(replyMessage === undefined ? {} : { replyMessage }),
+  };
+}
+
+const SUPERVISOR_REPLY_CUSTOM_TYPE = "subagent_supervisor_reply";
+
+function hasForgeSupervisorReplyMessage(messages: readonly unknown[], requestId: string): boolean {
+  return messages.some((message) => {
+    const value = message as { role?: unknown; customType?: unknown; details?: unknown };
+    if (value.role !== "custom" || value.customType !== SUPERVISOR_REPLY_CUSTOM_TYPE) return false;
+    if (typeof value.details !== "object" || value.details === null) return false;
+    return (value.details as Record<string, unknown>).requestId === requestId;
+  });
+}
+
+/**
+ * Persist a browser reply in its parent transcript when that session is live.
+ * History remains authoritative; resume reconciliation below fills a card that
+ * was missed while the parent was not in the registry.
+ */
+async function deliverForgeSupervisorReply(request: ExternalSupervisorRequest): Promise<void> {
+  if (request.replySource !== "forge-browser" || request.replyMessage === undefined) return;
+  const live = getSession(request.parentSessionId);
+  if (
+    live === undefined ||
+    hasForgeSupervisorReplyMessage(live.session.messages, request.requestId)
+  )
+    return;
+  try {
+    await live.session.sendCustomMessage(
+      {
+        customType: SUPERVISOR_REPLY_CUSTOM_TYPE,
+        content: request.replyMessage,
+        display: true,
+        details: {
+          source: "pi-forge",
+          kind: "supervisor-reply",
+          requestId: request.requestId,
+          runId: request.runId,
+          agent: request.agent,
+          decision: persistedSupervisorDecision(request.decision),
+          repliedAt: request.repliedAt,
+        },
+      },
+      { triggerTurn: false },
+    );
+  } catch {
+    // The reply is already durable in history. Resume reconciliation retries.
+  }
+}
+
+/** Rehydrate missed browser reply cards after a native cleanup or server restart. */
+export async function replayForgeSupervisorRepliesForSession(sessionId: string): Promise<void> {
+  const history = await readSupervisorHistory();
+  for (const request of history) {
+    if (request.parentSessionId !== sessionId || request.status !== "answered") continue;
+    await deliverForgeSupervisorReply(request);
+  }
 }
 
 export type ExternalSupervisorReplyResult =
@@ -616,6 +707,19 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
           : prior?.repliedAt === undefined
             ? {}
             : { repliedAt: prior.repliedAt }),
+        // A terminal rename can replace the native reply after a browser
+        // decision. Keep the Forge action's exact text instead of letting an
+        // unclassified transport replacement rewrite the decision record.
+        ...(prior?.replySource === "forge-browser" && prior.replyMessage !== undefined
+          ? { replyMessage: prior.replyMessage, replySource: "forge-browser" as const }
+          : reply === undefined
+            ? prior?.replyMessage === undefined
+              ? {}
+              : {
+                  replyMessage: prior.replyMessage,
+                  ...(prior.replySource === undefined ? {} : { replySource: prior.replySource }),
+                }
+            : { replyMessage: reply.message }),
       });
     }
     // The native client deletes a request as soon as it receives a terminal
@@ -630,6 +734,9 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
           ...prior,
           status: "answered",
           ...(repliedAt === undefined ? {} : { repliedAt }),
+          ...(prior.replySource === "forge-browser" || prior.replyMessage !== undefined
+            ? {}
+            : { replyMessage: reply.message }),
         });
       } else if (prior.expiresAt !== undefined && now > prior.expiresAt) {
         byId.set(prior.requestId, { ...prior, status: "expired" });
@@ -640,7 +747,7 @@ export async function listExternalSupervisorRequests(): Promise<ExternalSupervis
     );
     sortSupervisorHistory(projected);
     await writeSupervisorHistory(projected);
-    return projected;
+    return projected.map(publicSupervisorRequest);
   });
 }
 
@@ -652,11 +759,20 @@ async function reconcileDeletedSupervisorRequest(requestId: string): Promise<boo
   const reply = await readSupervisorReply(replyFileFor(prior), requestId);
   if (prior.status !== "answered" && reply === undefined) return false;
   const repliedAt = reply === undefined ? prior.repliedAt : finiteTimestamp(reply.createdAt);
-  if (prior.status !== "answered" || repliedAt !== prior.repliedAt) {
+  const replyMessage =
+    prior.replySource === "forge-browser" || prior.replyMessage !== undefined
+      ? prior.replyMessage
+      : reply?.message;
+  if (
+    prior.status !== "answered" ||
+    repliedAt !== prior.repliedAt ||
+    replyMessage !== prior.replyMessage
+  ) {
     const reconciled = {
       ...prior,
       status: "answered" as const,
       ...(repliedAt === undefined ? {} : { repliedAt }),
+      ...(replyMessage === undefined ? {} : { replyMessage }),
     };
     await writeSupervisorHistory(
       sortSupervisorHistory(
@@ -777,12 +893,15 @@ export async function replyExternalSupervisorRequest(
       decision,
       status: "answered",
       repliedAt,
+      replyMessage: normalized,
+      replySource: "forge-browser",
     };
     const retained = history.filter((record) => record.requestId !== requestId);
     // Keep newest-first before the fixed-cap writer so a just-accepted reply
     // cannot be evicted when history is already full.
     retained.unshift(projected);
     await writeSupervisorHistory(sortSupervisorHistory(retained));
+    await deliverForgeSupervisorReply(projected);
     return { accepted: true, status: "answered", decision, repliedAt };
   });
 }

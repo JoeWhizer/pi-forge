@@ -38,6 +38,10 @@ import {
   shouldExpandSubagentFleetRuns,
   truncateSubagentFleetRunId,
 } from "../lib/subagent-fleet";
+import {
+  supervisorDecisionFromValue,
+  supervisorDecisionPresentation,
+} from "../lib/subagent-supervisor-decision";
 import { useProjectStore } from "../store/project-store";
 import { useSessionStore } from "../store/session-store";
 import { useSubagentFleetStore } from "../store/subagent-fleet-store";
@@ -780,27 +784,10 @@ function SupervisorRequestDecisionStatus({
 }: {
   decision: "approved" | "rejected" | "no-decision";
 }) {
-  const presentation = {
-    approved: {
-      label: "Approved",
-      className:
-        "border-emerald-700 bg-emerald-950/50 text-emerald-100 light:border-emerald-400 light:bg-emerald-50 light:text-emerald-900",
-      Icon: CheckCircle2,
-    },
-    rejected: {
-      label: "Rejected",
-      className:
-        "border-red-700 bg-red-950/50 text-red-100 light:border-red-400 light:bg-red-50 light:text-red-900",
-      Icon: XCircle,
-    },
-    "no-decision": {
-      label: "No decision recorded",
-      className:
-        "border-neutral-700 bg-neutral-900 text-neutral-200 light:border-neutral-300 light:bg-white light:text-neutral-700",
-      Icon: Clock3,
-    },
-  }[decision];
-  const Icon = presentation.Icon;
+  const presentation = supervisorDecisionPresentation(decision);
+  const classified = supervisorDecisionFromValue(decision);
+  const Icon =
+    classified === "approved" ? CheckCircle2 : classified === "rejected" ? XCircle : Clock3;
   return (
     <span
       title="Decision classification is recorded only by Forge Approve or Reject actions."
@@ -1025,6 +1012,12 @@ function SupervisorRequestRow({
             <dt>requestId</dt>
             <dd className="break-all">{request.requestId}</dd>
           </dl>
+          {request.replyMessage !== undefined && (
+            <div className="mt-2 rounded border border-neutral-700 bg-neutral-900 p-2 text-[11px] text-neutral-100 light:border-neutral-300 light:bg-neutral-50 light:text-neutral-800">
+              <div className="mb-1 font-medium">Supervisor reply</div>
+              <div className="whitespace-pre-wrap break-words">{request.replyMessage}</div>
+            </div>
+          )}
           {canReply && (
             <div className="mt-3">
               <label htmlFor={`supervisor-reply-${request.requestId}`} className="sr-only">
