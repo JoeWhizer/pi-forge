@@ -586,7 +586,10 @@ async function main(): Promise<void> {
         }),
         "utf8",
       );
-      await rm(join(requestsDir, `${approveId}.json`));
+      await Promise.all([
+        rm(join(requestsDir, `${approveId}.json`)),
+        rm(join(requestsDir, `${rejectId}.json`)),
+      ]);
       const repeatedApproved = await jsend("POST", `${listUrl}/${approveId}/approve`, {}, auth);
       const decidedList = await jget(listUrl, auth);
       assert(
@@ -615,7 +618,7 @@ async function main(): Promise<void> {
         JSON.stringify(repeatedApproved.body),
       );
       assert(
-        "native supervisor Reject records a rejected decision with answered transport state",
+        "native supervisor Reject remains classified after native request cleanup and reload",
         rejected.status === 202 &&
           (rejected.body as { status?: string; decision?: string }).status === "answered" &&
           (rejected.body as { decision?: string }).decision === "rejected" &&

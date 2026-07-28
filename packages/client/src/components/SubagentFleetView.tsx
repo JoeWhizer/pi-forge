@@ -26,10 +26,12 @@ import {
 import {
   createSubagentFleetNavigationGuard,
   filterCleanedSubagentFleetRuns,
+  filterCleanedSubagentSupervisorRequests,
   formatSubagentDuration,
   groupSubagentFleetRuns,
   isActiveSubagentFleetState,
   isCleanableSubagentFleetState,
+  isCleanableSubagentSupervisorRequest,
   isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
@@ -49,6 +51,10 @@ export function SubagentFleetView({ onClose }: Props) {
   const runs = useSubagentFleetStore((state) => state.runs);
   const supervisorRequests = useSubagentFleetStore((state) => state.supervisorRequests);
   const hiddenRunIds = useSubagentFleetStore((state) => state.hiddenRunIds);
+  const hiddenSupervisorRequestIds = useSubagentFleetStore(
+    (state) => state.hiddenSupervisorRequestIds,
+  );
+  const sentSupervisorReplyIds = useSubagentFleetStore((state) => state.sentSupervisorReplyIds);
   const stoppingRunIds = useSubagentFleetStore((state) => state.stoppingRunIds);
   const expandedParents = useSubagentFleetStore((state) => state.expandedParents);
   const expandedRuns = useSubagentFleetStore((state) => state.expandedRuns);
@@ -65,6 +71,7 @@ export function SubagentFleetView({ onClose }: Props) {
   const load = useSubagentFleetStore((state) => state.load);
   const cleanTerminalRuns = useSubagentFleetStore((state) => state.cleanTerminalRuns);
   const resetCleanedRuns = useSubagentFleetStore((state) => state.resetCleanedRuns);
+  const markSupervisorReplySent = useSubagentFleetStore((state) => state.markSupervisorReplySent);
   const stopRun = useSubagentFleetStore((state) => state.stopRun);
   const toggleParentExpanded = useSubagentFleetStore((state) => state.toggleParentExpanded);
   const toggleRunExpanded = useSubagentFleetStore((state) => state.toggleRunExpanded);
@@ -153,6 +160,14 @@ export function SubagentFleetView({ onClose }: Props) {
     () => filterCleanedSubagentFleetRuns(runs, new Set(hiddenRunIds)),
     [hiddenRunIds, runs],
   );
+  const visibleSupervisorRequests = useMemo(
+    () =>
+      filterCleanedSubagentSupervisorRequests(
+        supervisorRequests,
+        new Set(hiddenSupervisorRequestIds),
+      ),
+    [hiddenSupervisorRequestIds, supervisorRequests],
+  );
   const groups = useMemo(() => groupSubagentFleetRuns(visibleRuns), [visibleRuns]);
   const sessionsById = useMemo(
     () =>
@@ -208,7 +223,10 @@ export function SubagentFleetView({ onClose }: Props) {
     setDeclineConfirmationMessage(undefined);
     if (request === undefined) return;
     void api.rejectSubagentSupervisorRequest(request.requestId, message).then(
-      () => load(true),
+      (result) => {
+        markSupervisorReplySent(request.requestId, result.decision);
+        return load(true);
+      },
       (err: unknown) => {
         const message =
           err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message;
@@ -336,8 +354,8 @@ export function SubagentFleetView({ onClose }: Props) {
           <button
             type="button"
             onClick={() => resetCleanedRuns()}
-            disabled={hiddenRunIds.length === 0}
-            title="Restore runs hidden by Clean. This does not change server data."
+            disabled={hiddenRunIds.length === 0 && hiddenSupervisorRequestIds.length === 0}
+            title="Restore runs and supervisor requests hidden by Clean. This does not change server data."
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
             <RotateCcw size={12} />
@@ -350,9 +368,16 @@ export function SubagentFleetView({ onClose }: Props) {
               !runs.some(
                 (run) =>
                   isCleanableSubagentFleetState(run.state) && !hiddenRunIds.includes(run.runId),
+              ) &&
+              !supervisorRequests.some(
+                (request) =>
+                  isCleanableSubagentSupervisorRequest(
+                    request,
+                    sentSupervisorReplyIds.includes(request.requestId),
+                  ) && !hiddenSupervisorRequestIds.includes(request.requestId),
               )
             }
-            title="Hide completed, failed, and stopped runs from this Fleet view only. Sessions and artifacts are preserved."
+            title="Hide terminal runs and completed supervisor requests from this Fleet view only. Sessions, artifacts, and server history are preserved."
             className="flex items-center gap-1 rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:border-neutral-500 disabled:opacity-50 light:border-neutral-400 light:text-neutral-700"
           >
             <Trash2 size={12} />
@@ -369,8 +394,9 @@ export function SubagentFleetView({ onClose }: Props) {
           </button>
         </header>
         <div className="border-b border-neutral-800 px-4 py-1.5 text-[10px] text-neutral-500 light:border-neutral-200">
-          Clean only hides completed, failed, and stopped runs in this Fleet view. Reset restores
-          them; neither action changes sessions, artifacts, or server state.
+          Clean only hides terminal runs and completed supervisor requests in this Fleet view. Reset
+          restores them; neither action changes sessions, artifacts, server history, or server
+          state.
         </div>
 
         {(error !== undefined || openError !== undefined) && (
@@ -381,12 +407,14 @@ export function SubagentFleetView({ onClose }: Props) {
 
         <div className="flex-1 overflow-y-auto p-4">
           <SupervisorRequests
-            requests={supervisorRequests}
+            requests={visibleSupervisorRequests}
+            sentReplyRequestIds={new Set(sentSupervisorReplyIds)}
             expanded={supervisorRequestsExpanded}
             expandedRequests={expandedSupervisorRequests}
             onToggleExpanded={toggleSupervisorRequestExpanded}
             onToggleSection={toggleSupervisorRequestsExpanded}
             onSubmitted={() => load(true)}
+            onReplySent={markSupervisorReplySent}
             onDecline={(requestId, message, trigger) => {
               declineConfirmationTriggerRef.current = trigger;
               setDeclineConfirmationMessage(message);
@@ -791,19 +819,23 @@ function supervisorRequestPreview(message: string): string {
 
 function SupervisorRequests({
   requests,
+  sentReplyRequestIds,
   expanded,
   expandedRequests,
   onToggleExpanded,
   onToggleSection,
   onSubmitted,
+  onReplySent,
   onDecline,
 }: {
   requests: SubagentSupervisorRequest[];
+  sentReplyRequestIds: ReadonlySet<string>;
   expanded: boolean;
   expandedRequests: Record<string, boolean>;
   onToggleExpanded: (requestId: string) => void;
   onToggleSection: () => void;
   onSubmitted: () => Promise<void>;
+  onReplySent: (requestId: string, decision: SubagentSupervisorRequest["decision"]) => void;
   onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
 }) {
   if (requests.length === 0) return null;
@@ -855,8 +887,10 @@ function SupervisorRequests({
               key={request.requestId}
               request={request}
               expanded={expandedRequests[request.requestId] ?? false}
+              replySent={sentReplyRequestIds.has(request.requestId)}
               onToggleExpanded={onToggleExpanded}
               onSubmitted={onSubmitted}
+              onReplySent={onReplySent}
               onDecline={onDecline}
             />
           ))}
@@ -871,26 +905,26 @@ const MAX_SUPERVISOR_REPLY_BYTES = 64 * 1024;
 function SupervisorRequestRow({
   request,
   expanded,
+  replySent,
   onToggleExpanded,
   onSubmitted,
+  onReplySent,
   onDecline,
 }: {
   request: SubagentSupervisorRequest;
   expanded: boolean;
+  replySent: boolean;
   onToggleExpanded: (requestId: string) => void;
   onSubmitted: () => Promise<void>;
+  onReplySent: (requestId: string, decision: SubagentSupervisorRequest["decision"]) => void;
   onDecline: (requestId: string, message: string | undefined, trigger: HTMLButtonElement) => void;
 }) {
   const [answer, setAnswer] = useState("");
   const [sending, setSending] = useState(false);
-  const [replySent, setReplySent] = useState(false);
   const [submissionDecision, setSubmissionDecision] = useState<
     "approved" | "rejected" | "no-decision" | undefined
   >();
   const [error, setError] = useState<string | undefined>();
-  useEffect(() => {
-    if (request.status !== "open") setReplySent(false);
-  }, [request.status]);
   const canReply = request.status === "open" && request.expectsReply && !replySent;
   const transport = supervisorRequestTransportStatus(
     request,
@@ -912,15 +946,13 @@ function SupervisorRequestRow({
     setSending(true);
     setError(undefined);
     try {
-      if (kind === "approve") {
-        await api.approveSubagentSupervisorRequest(request.requestId, normalized || undefined);
-        setSubmissionDecision("approved");
-      } else {
-        await api.replySubagentSupervisorRequest(request.requestId, normalized);
-        setSubmissionDecision("no-decision");
-      }
+      const result =
+        kind === "approve"
+          ? await api.approveSubagentSupervisorRequest(request.requestId, normalized || undefined)
+          : await api.replySubagentSupervisorRequest(request.requestId, normalized);
+      setSubmissionDecision(result.decision);
+      onReplySent(request.requestId, result.decision);
       setAnswer("");
-      setReplySent(true);
       await onSubmitted();
     } catch (err) {
       setError(err instanceof ApiError ? (err.message ?? err.code) : (err as Error).message);

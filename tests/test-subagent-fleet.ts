@@ -6,8 +6,10 @@ import { randomUUID } from "node:crypto";
 import {
   createSubagentFleetNavigationGuard,
   filterCleanedSubagentFleetRuns,
+  filterCleanedSubagentSupervisorRequests,
   formatSubagentDuration,
   groupSubagentFleetRuns,
+  isCleanableSubagentSupervisorRequest,
   isStoppableSubagentFleetRun,
   isSubagentFleetChildSessionDiscovered,
   shouldExpandSubagentFleetRun,
@@ -15,7 +17,10 @@ import {
   toggleSubagentFleetExpanded,
   truncateSubagentFleetRunId,
 } from "../packages/client/src/lib/subagent-fleet";
-import type { SubagentFleetRun } from "../packages/client/src/lib/api-client/types";
+import type {
+  SubagentFleetRun,
+  SubagentSupervisorRequest,
+} from "../packages/client/src/lib/api-client/types";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let failures = 0;
@@ -95,8 +100,8 @@ async function main(): Promise<void> {
       fleetViewSource.includes("No decision recorded") &&
       fleetViewSource.includes("Approved") &&
       fleetViewSource.includes("Rejected") &&
-      fleetViewSource.includes('setSubmissionDecision("no-decision")') &&
-      fleetViewSource.includes('setSubmissionDecision("approved")') &&
+      fleetViewSource.includes("setSubmissionDecision(result.decision)") &&
+      fleetViewSource.includes("onReplySent(request.requestId, result.decision)") &&
       fleetViewSource.includes("Optional decision note sent with Approve or Reject") &&
       fleetViewSource.includes(
         "approveSubagentSupervisorRequest(request.requestId, normalized || undefined)",
@@ -123,6 +128,10 @@ async function main(): Promise<void> {
     resolve(repoRoot, "packages/server/src/subagents-external.ts"),
     "utf8",
   );
+  const apiClientSource = await readFile(
+    resolve(repoRoot, "packages/client/src/lib/api-client/index.ts"),
+    "utf8",
+  );
   assert(
     "Supervisor ingestion is bounded, exact-correlated, reply-reconciled, and read-rate-limited",
     supervisorRouteSource.includes("MAX_SUPERVISOR_REPLY_BYTES") &&
@@ -134,6 +143,15 @@ async function main(): Promise<void> {
       supervisorExternalSource.includes("readBoundedJson") &&
       supervisorExternalSource.includes("sortSupervisorHistory") &&
       supervisorExternalSource.includes("Re-check prior open records"),
+  );
+  assert(
+    "Fleet validates and renders persisted decision classifications without text inference",
+    apiClientSource.includes("function vSubagentSupervisorDecision") &&
+      apiClientSource.includes("decision: vSubagentSupervisorDecision(raw.decision, status)") &&
+      fleetViewSource.includes("SupervisorRequestDecisionStatus") &&
+      fleetViewSource.includes("request.decision") &&
+      fleetStoreSource.includes("markSupervisorReplySent") &&
+      fleetStoreSource.includes("sentSupervisorReplyIds"),
   );
 
   assert(
@@ -490,6 +508,64 @@ async function main(): Promise<void> {
         formatSubagentDuration(undefined, 1_000, 3_000) === "2s",
     );
     const oversizedRunId = "r".repeat(160);
+    const supervisorRequests: SubagentSupervisorRequest[] = [
+      {
+        requestId: "pending",
+        parentSessionId,
+        runId: activeRunId,
+        agent: "worker",
+        childIndex: 0,
+        reason: "need_decision",
+        expectsReply: true,
+        createdAt: 1,
+        message: "Still waiting",
+        decision: "no-decision",
+        status: "open",
+      },
+      {
+        requestId: "approved",
+        parentSessionId,
+        runId: activeRunId,
+        agent: "worker",
+        childIndex: 0,
+        reason: "need_decision",
+        expectsReply: true,
+        createdAt: 2,
+        message: "Approved explicitly",
+        decision: "approved",
+        status: "answered",
+      },
+      {
+        requestId: "terminal",
+        parentSessionId,
+        runId: activeRunId,
+        agent: "worker",
+        childIndex: 0,
+        reason: "need_decision",
+        expectsReply: true,
+        createdAt: 3,
+        message: "Terminal free text",
+        decision: "no-decision",
+        status: "answered",
+      },
+      {
+        requestId: "expired",
+        parentSessionId,
+        runId: activeRunId,
+        agent: "worker",
+        childIndex: 0,
+        reason: "interview_request",
+        expectsReply: true,
+        createdAt: 4,
+        message: "Expired request",
+        decision: "no-decision",
+        status: "expired",
+      },
+    ];
+    const cleanedSupervisorRequests = filterCleanedSubagentSupervisorRequests(
+      supervisorRequests,
+      new Set(["approved", "terminal", "expired"]),
+    );
     assert(
       "Clean filters only selected Fleet rows and both hierarchy levels start collapsed",
       filterCleanedSubagentFleetRuns(allRuns, new Set([failedRunId, processFailedRunId])).every(
@@ -501,6 +577,23 @@ async function main(): Promise<void> {
         !shouldExpandSubagentFleetRun(failed!) &&
         isStoppableSubagentFleetRun(active!) &&
         !isStoppableSubagentFleetRun(failed!),
+    );
+    assert(
+      "Clean hides only completed supervisor requests and Reset can restore their local rows",
+      !isCleanableSubagentSupervisorRequest(supervisorRequests[0]) &&
+        !isCleanableSubagentSupervisorRequest(supervisorRequests[0], false) &&
+        isCleanableSubagentSupervisorRequest(supervisorRequests[0], true) &&
+        isCleanableSubagentSupervisorRequest(supervisorRequests[1]) &&
+        isCleanableSubagentSupervisorRequest(supervisorRequests[2]) &&
+        isCleanableSubagentSupervisorRequest(supervisorRequests[3]) &&
+        cleanedSupervisorRequests.map((request) => request.requestId).join(",") === "pending" &&
+        filterCleanedSubagentSupervisorRequests(supervisorRequests, new Set()).length ===
+          supervisorRequests.length &&
+        fleetStoreSource.includes("hiddenSupervisorRequestIds") &&
+        fleetStoreSource.includes(
+          "resetCleanedRuns: () => set({ hiddenRunIds: [], hiddenSupervisorRequestIds: [] })",
+        ),
+      JSON.stringify(cleanedSupervisorRequests),
     );
     const parentKey = `parent:${parentSessionId}`;
     const expandedParent = toggleSubagentFleetExpanded({}, parentKey, false);

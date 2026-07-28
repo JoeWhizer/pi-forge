@@ -5,7 +5,11 @@ import {
   type SubagentFleetRun,
   type SubagentSupervisorRequest,
 } from "../lib/api-client";
-import { isCleanableSubagentFleetState, toggleSubagentFleetExpanded } from "../lib/subagent-fleet";
+import {
+  isCleanableSubagentFleetState,
+  isCleanableSubagentSupervisorRequest,
+  toggleSubagentFleetExpanded,
+} from "../lib/subagent-fleet";
 
 const POLL_INTERVAL_MS = 3_000;
 const SUPERVISOR_REQUESTS_EXPANDED_KEY = "pi-forge/subagent-supervisor-requests-expanded";
@@ -25,6 +29,8 @@ interface SubagentFleetState {
   runs: SubagentFleetRun[];
   supervisorRequests: SubagentSupervisorRequest[];
   hiddenRunIds: string[];
+  hiddenSupervisorRequestIds: string[];
+  sentSupervisorReplyIds: string[];
   stoppingRunIds: string[];
   expandedParents: Record<string, boolean>;
   expandedRuns: Record<string, boolean>;
@@ -37,6 +43,10 @@ interface SubagentFleetState {
   load: (forceRefresh?: boolean) => Promise<void>;
   cleanTerminalRuns: () => void;
   resetCleanedRuns: () => void;
+  markSupervisorReplySent: (
+    requestId: string,
+    decision: SubagentSupervisorRequest["decision"],
+  ) => void;
   stopRun: (runId: string) => Promise<void>;
   toggleParentExpanded: (parentKey: string, defaultExpanded: boolean) => void;
   toggleRunExpanded: (runId: string, defaultExpanded: boolean) => void;
@@ -50,6 +60,8 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
   runs: [],
   supervisorRequests: [],
   hiddenRunIds: [],
+  hiddenSupervisorRequestIds: [],
+  sentSupervisorReplyIds: [],
   stoppingRunIds: [],
   expandedParents: {},
   expandedRuns: {},
@@ -78,6 +90,11 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
         stoppingRunIds: state.stoppingRunIds.filter((runId) =>
           runs.some((run) => run.runId === runId && run.state === "running"),
         ),
+        sentSupervisorReplyIds: state.sentSupervisorReplyIds.filter((requestId) =>
+          supervisorRequests.some(
+            (request) => request.requestId === requestId && request.status === "open",
+          ),
+        ),
         loading: false,
         refreshing: false,
         lastRefreshedAt: Date.now(),
@@ -102,9 +119,30 @@ export const useSubagentFleetStore = create<SubagentFleetState>((set, get) => ({
             .map((run) => run.runId),
         ]),
       ),
+      hiddenSupervisorRequestIds: Array.from(
+        new Set([
+          ...state.hiddenSupervisorRequestIds,
+          ...state.supervisorRequests
+            .filter((request) =>
+              isCleanableSubagentSupervisorRequest(
+                request,
+                state.sentSupervisorReplyIds.includes(request.requestId),
+              ),
+            )
+            .map((request) => request.requestId),
+        ]),
+      ),
     }));
   },
-  resetCleanedRuns: () => set({ hiddenRunIds: [] }),
+  resetCleanedRuns: () => set({ hiddenRunIds: [], hiddenSupervisorRequestIds: [] }),
+  markSupervisorReplySent: (requestId, decision) => {
+    set((state) => ({
+      sentSupervisorReplyIds: Array.from(new Set([...state.sentSupervisorReplyIds, requestId])),
+      supervisorRequests: state.supervisorRequests.map((request) =>
+        request.requestId === requestId ? { ...request, decision } : request,
+      ),
+    }));
+  },
   stopRun: async (runId) => {
     if (get().stoppingRunIds.includes(runId)) return;
     set((state) => ({

@@ -1,4 +1,8 @@
-import type { SubagentFleetRun, SubagentFleetState } from "./api-client/types";
+import type {
+  SubagentFleetRun,
+  SubagentFleetState,
+  SubagentSupervisorRequest,
+} from "./api-client/types";
 
 export interface SubagentFleetGroup {
   /** Stable parent session id, or undefined for artifacts whose parent is unavailable. */
@@ -66,6 +70,31 @@ export function filterCleanedSubagentFleetRuns(
   hiddenRunIds: ReadonlySet<string>,
 ): SubagentFleetRun[] {
   return runs.filter((run) => !hiddenRunIds.has(run.runId));
+}
+
+/**
+ * A reply becomes cleanable only after the browser has received the accepted
+ * reply response, or when the persisted native projection is terminal.
+ * Explicit decisions are Forge-classified replies, never text inference.
+ */
+export function isCleanableSubagentSupervisorRequest(
+  request: Pick<SubagentSupervisorRequest, "status" | "decision">,
+  replySent = false,
+): boolean {
+  return (
+    replySent ||
+    request.status === "answered" ||
+    request.status === "expired" ||
+    request.decision === "approved" ||
+    request.decision === "rejected"
+  );
+}
+
+export function filterCleanedSubagentSupervisorRequests(
+  requests: readonly SubagentSupervisorRequest[],
+  hiddenRequestIds: ReadonlySet<string>,
+): SubagentSupervisorRequest[] {
+  return requests.filter((request) => !hiddenRequestIds.has(request.requestId));
 }
 
 /** Fleet starts compact at both hierarchy levels; explicit user toggles live in the store. */
